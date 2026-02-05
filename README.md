@@ -1,4 +1,4 @@
-<img width="966" height="858" alt="image" src="https://github.com/user-attachments/assets/f30fad7b-52aa-4701-a69b-2fc117f6635b" />
+<img width="945" height="838" alt="image" src="https://github.com/user-attachments/assets/b571a862-1eb4-4849-8489-fb8441fbec98" />
 
 # EXAMPLES
 
@@ -27,3 +27,4 @@ uv run Booklet.py
 MODEL: https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
 
 # FEEL FREE TO PR AND CONTRIBUTE 
+
