@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import socket
 import ipaddress
 import requests
+import webbrowser
 from threading import Lock
 
 # ────────────────────────────────────────────────
@@ -41,7 +42,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(32).hex())
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MiB max request size
 
-app.config['WTF_CSRF_ENABLED'] = True
+app.config['WTF_CSRF_ENABLED'] = False
 logger.warning("CSRF protection DISABLED – local development mode only")
 
 csrf = CSRFProtect(app)  # still initialize, but disabled via config
@@ -664,8 +665,8 @@ progress::-moz-progress-bar { background: var(--accent); }
     </div>
 
     <div class="footer">
-        Credit @JoshMakesStuff on 
-        <a href="https://github.com/TheJoshCodeGithub" style="color: blue; text-decoration: underline;">
+        Credit @TheJoshCode on 
+        <a href="https://github.com/TheJoshCode" style="color: blue; text-decoration: underline;">
             https://github.com/TheJoshCodeGithub
         </a>
     </div>
@@ -1019,6 +1020,10 @@ def internal_server_error(exc):
     logger.error(f"Internal server error: {exc}", exc_info=True)
     return jsonify({'error': 'An internal server error occurred'}), 500
 
+def open_browser(host, port):
+    time.sleep(0.5)
+    url = f"http://{host}:{port}"
+    webbrowser.open(url)
 
 if __name__ == '__main__':
     if os.environ.get('SECRET_KEY') is None:
@@ -1034,6 +1039,12 @@ if __name__ == '__main__':
     logger.info(f"Starting Booklet server on {host}:{port}")
     logger.info(f"Output directory: {OUTPUT_DIRECTORY}")
     logger.info(f"Files retained for: {FILE_RETENTION_SECONDS // 3600} hours")
+
+    threading.Thread(
+        target=open_browser,
+        args=(host, port),
+        daemon=True
+    ).start()
 
     app.run(
         debug=debug,
