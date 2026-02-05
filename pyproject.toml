@@ -1,0 +1,23 @@
+[project]
+name = "booklet"
+version = "0.1.0"
+description = "generate entire audiobooks from a single 5 second voice clip, all offline!"
+readme = "README.md"
+requires-python = "==3.11.14"
+dependencies = [
+    "flask>=3.1.2",
+    "flask-limiter>=4.1.1",
+    "flask-wtf>=1.2.2",
+    "numpy>=2.3.5",
+    "packaging>=24.1",
+    "qwen-tts>=0.0.5",
+    "setuptools>=70.2.0",
+    "soundfile>=0.13.1",
+    "torch>=2.10.0",
+    "torchaudio>=2.10.0",
+    "torchvision>=0.25.0",
+    "wheel>=0.46.3",
+]
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu128"
