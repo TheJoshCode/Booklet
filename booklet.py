@@ -667,7 +667,7 @@ progress::-moz-progress-bar { background: var(--accent); }
     <div class="footer">
         Credit @TheJoshCode on 
         <a href="https://github.com/TheJoshCode" style="color: blue; text-decoration: underline;">
-            https://github.com/TheJoshCodeGithub
+            https://github.com/TheJoshCode
         </a>
     </div>
 </div>
