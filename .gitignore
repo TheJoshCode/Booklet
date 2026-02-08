@@ -16,3 +16,5 @@ ref.wav
 
 tuple[bool
 bool
+outputs
+cache

@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Booklet - AI Audiobook Generator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #3e3e3e;
+            --primary-dark: #757575;
+            --secondary: #4e4e4e;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --info: #3b82f6;
+            --bg-light: #3f3f3f;
+            --bg-dark: #1f2937;
+            --text-dark: #242424;
+            --text-light: #cfcfcf;
+            --border: #bdbdbd;
+            --txt-boxes: #efefef;
+            --pg-bar-prim: #ff0000;
+            --pg-bar-sec: #22ff00;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: var(--text-light);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: rgb(255, 255, 255);
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        @media (max-width: 968px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: rgb(44, 44, 44);
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+
+        .card-header {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 20px;
+            color: var(--text-light);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text-light);
+            font-size: 0.95rem;
+        }
+
+        .form-input,
+        .form-select,
+        .form-textarea {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            background: var(--txt-boxes);
+            font-size: 0.95rem;
+            transition: all 0.2s;
+            font-family: inherit;
+            color: var(--text-dark);
+        }
+
+        .form-input:focus,
+        .form-select:focus,
+        .form-textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .form-textarea {
+            resize: vertical;
+            min-height: 150px;
+        }
+
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .file-input-label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 12px 16px;
+            background: var(--bg-light);
+            border: 2px dashed var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+            color: var(--text-light);
+        }
+
+        .file-input-label:hover {
+            background: #f3f4f6;
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .file-input-label.has-file {
+            background: #ecfdf5;
+            border-color: var(--success);
+            color: var(--success);
+        }
+
+        input[type="file"] {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            overflow: hidden;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            justify-content: center;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
+            width: 100%;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: var(--bg-light);
+            color: var(--text-light);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: #e5e7eb;
+        }
+
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+
+        .btn-warning {
+            background: var(--warning);
+            color: white;
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.875rem;
+        }
+
+        .progress-container {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .progress-container.active {
+            display: block;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .progress-bar-wrapper {
+            height: 40px;
+            background: var(--bg-light);
+            border-radius: 20px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--pg-bar-prim), var(--pg-bar-sec));
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 700;
+            font-size: 0.9rem;
+        }
+
+        .progress-info {
+            margin-top: 10px;
+            font-size: 0.9rem;
+            color: var(--text-light);
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-generating {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .status-paused {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .status-completed {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .status-error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .sessions-grid {
+            display: grid;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .session-card {
+            background: var(--bg-light);
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            transition: all 0.2s;
+        }
+
+        .session-card:hover {
+            border-color: var(--primary);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .session-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .session-id {
+            font-family: 'Courier New', monospace;
+            font-size: 0.75rem;
+            color: var(--text-light);
+        }
+
+        .session-progress {
+            height: 8px;
+            background: #e5e7eb;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .session-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            transition: width 0.3s ease;
+        }
+
+        .session-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 0.85rem;
+            color: var(--text-light);
+            margin-bottom: 10px;
+        }
+
+        .session-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .alert.show {
+            display: block;
+            animation: slideDown 0.3s ease;
+        }
+
+        .alert-success {
+            background: #dcfce7;
+            color: #166534;
+            border-left: 4px solid var(--success);
+        }
+
+        .alert-error {
+            background: #fee2e2;
+            color: #991b1b;
+            border-left: 4px solid var(--danger);
+        }
+
+        .alert-info {
+            background: #dbeafe;
+            color: #1e40af;
+            border-left: 4px solid var(--info);
+        }
+
+        .alert-warning {
+            background: #fef3c7;
+            color: #92400e;
+            border-left: 4px solid var(--warning);
+        }
+
+        @keyframes slideDown {
+            from {
+                transform: translateY(-20px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-light);
+        }
+
+        .empty-state-icon {
+            font-size: 3rem;
+            margin-bottom: 10px;
+            opacity: 0.5;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--text-light);
+            transition: all 0.2s;
+        }
+
+        .tab:hover {
+            color: var(--primary);
+        }
+
+        .tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .badge {
+            display: inline-block;
+            background: var(--primary);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .help-text {
+            font-size: 0.85rem;
+            color: var(--text-light);
+            margin-top: 4px;
+        }
+
+        .divider {
+            margin: 20px 0;
+            text-align: center;
+            position: relative;
+        }
+
+        .divider::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            width: 100%;
+            height: 1px;
+            background: var(--border);
+        }
+
+        .divider-text {
+            background: rgb(51, 51, 51);
+            padding: 0 10px;
+            position: relative;
+            color: var(--text-light);
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Booklet</h1>
+            <p>Transform your books into high-quality audiobooks with AI voice cloning</p>
+        </div>
+
+        <div id="alertContainer"></div>
+
+        <div class="main-content">
+            <!-- Left Column: Generation Form -->
+            <div class="card">
+                <div class="card-header">
+                    📝 Create Audiobook
+                </div>
+
+                <form id="generateForm">
+                    <!-- Book Text Input -->
+                    <div class="form-group">
+                        <label class="form-label">Book Text</label>
+                        <textarea 
+                            class="form-textarea" 
+                            id="bookText" 
+                            name="book_text"
+                            placeholder="Paste your book text here, or upload a file below..."
+                            rows="8"
+                        ></textarea>
+                        <p class="help-text">Enter your book text directly, or upload a .txt or .pdf file</p>
+                    </div>
+
+                    <div class="divider">
+                        <span class="divider-text">OR</span>
+                    </div>
+
+                    <!-- Book File Upload -->
+                    <div class="form-group">
+                        <label class="form-label">Upload Book File</label>
+                        <div class="file-input-wrapper">
+                            <input 
+                                type="file" 
+                                id="novelFile" 
+                                name="novel_file"
+                                accept=".txt,.pdf"
+                                onchange="handleFileSelect(this, 'novelFileLabel')"
+                            >
+                            <label for="novelFile" class="file-input-label" id="novelFileLabel">
+                                📁 Choose .txt or .pdf file
+                            </label>
+                        </div>
+                        <p class="help-text">Max 10 MB - .txt or .pdf format</p>
+                    </div>
+
+                    <!-- Reference Audio -->
+                    <div class="form-group">
+                        <label class="form-label">Reference Voice (Required)</label>
+                        
+                        <div class="tabs">
+                            <button type="button" class="tab active" onclick="switchTab('upload')">Upload</button>
+                            <button type="button" class="tab" onclick="switchTab('url')">URL</button>
+                        </div>
+
+                        <div id="uploadTab" class="tab-content active">
+                            <div class="file-input-wrapper">
+                                <input 
+                                    type="file" 
+                                    id="refAudioFile" 
+                                    name="ref_audio_file"
+                                    accept=".wav"
+                                    onchange="handleFileSelect(this, 'refAudioLabel')"
+                                >
+                                <label for="refAudioFile" class="file-input-label" id="refAudioLabel">
+                                    🎤 Choose .wav file
+                                </label>
+                            </div>
+                        </div>
+
+                        <div id="urlTab" class="tab-content">
+                            <input 
+                                type="url" 
+                                class="form-input" 
+                                id="refAudioUrl" 
+                                name="ref_audio_url"
+                                placeholder="https://example.com/voice.wav"
+                            >
+                        </div>
+                        <p class="help-text">A short audio sample (3-10 seconds) of the voice you want to clone</p>
+                    </div>
+
+                    <!-- Reference Text -->
+                    <div class="form-group">
+                        <label class="form-label">Reference Text (Required)</label>
+                        <input 
+                            type="text" 
+                            class="form-input" 
+                            id="refText" 
+                            name="ref_text"
+                            placeholder="The exact words spoken in the reference audio"
+                            required
+                        >
+                        <p class="help-text">Transcription of what's said in your voice sample</p>
+                    </div>
+
+                    <!-- Language -->
+                    <div class="form-group">
+                        <label class="form-label">Language</label>
+                        <select class="form-select" id="language" name="language">
+                            <option value="English" selected>English</option>
+                            <option value="Spanish">Spanish</option>
+                            <option value="French">French</option>
+                            <option value="German">German</option>
+                            <option value="Chinese">Chinese</option>
+                            <option value="Japanese">Japanese</option>
+                        </select>
+                    </div>
+
+                    <!-- Submit Button -->
+                    <button type="submit" class="btn btn-primary" id="generateBtn">
+                        🚀 Generate Audiobook
+                    </button>
+                </form>
+
+                <!-- Progress Display -->
+                <div id="progressContainer" class="progress-container">
+                    <div class="progress-header">
+                        <span id="progressStatus">Generating...</span>
+                        <span id="progressBadge" class="status-badge status-generating">Generating</span>
+                    </div>
+                    <div class="progress-bar-wrapper">
+                        <div class="progress-bar" id="progressBar" style="width: 0%">0%</div>
+                    </div>
+                    <div class="progress-info" id="progressInfo">
+                        Starting...
+                    </div>
+                    <div class="session-actions" id="sessionActions" style="margin-top: 15px;">
+                        <!-- Pause/Resume buttons will be added here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Sessions -->
+            <div class="card">
+                <div class="card-header">
+                    📊 Sessions
+                    <span class="badge" id="sessionCount">0</span>
+                </div>
+
+                <div class="tabs">
+                    <button type="button" class="tab active" onclick="switchSessionTab('cached')">
+                        Resumable<span class="badge" id="cachedCount">0</span>
+                    </button>
+                    <button type="button" class="tab" onclick="switchSessionTab('outputs')">
+                        Completed<span class="badge" id="outputCount">0</span>
+                    </button>
+                </div>
+
+                <div id="cachedSessionsTab" class="tab-content active">
+                    <div class="sessions-grid" id="cachedSessions">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">💾</div>
+                            <p>No paused or resumable sessions</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="outputsTab" class="tab-content">
+                    <div class="sessions-grid" id="completedFiles">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">🎵</div>
+                            <p>No completed audiobooks yet</p>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="btn btn-secondary" onclick="refreshAll()" style="width: 100%; margin-top: 15px;">
+                    🔄 Refresh
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentSessionId = null;
+        let progressInterval = null;
+        let activeSessions = new Map();
+
+        // Show alert
+        function showAlert(message, type = 'info') {
+            const container = document.getElementById('alertContainer');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type} show`;
+            alert.textContent = message;
+            container.appendChild(alert);
+
+            setTimeout(() => {
+                alert.classList.remove('show');
+                setTimeout(() => alert.remove(), 300);
+            }, 5000);
+        }
+
+        // Handle file selection
+        function handleFileSelect(input, labelId) {
+            const label = document.getElementById(labelId);
+            if (input.files && input.files[0]) {
+                const fileName = input.files[0].name;
+                const fileSize = (input.files[0].size / (1024 * 1024)).toFixed(2);
+                label.innerHTML = `✅ ${fileName} (${fileSize} MB)`;
+                label.classList.add('has-file');
+            } else {
+                label.classList.remove('has-file');
+            }
+        }
+
+        // Switch tabs (upload/url)
+        function switchTab(tab) {
+            document.querySelectorAll('.tabs .tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById(tab + 'Tab').classList.add('active');
+        }
+
+        // Switch session tabs
+        function switchSessionTab(tab) {
+            document.querySelectorAll('.card .tabs .tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            if (tab === 'cached') {
+                document.getElementById('cachedSessionsTab').classList.add('active');
+                document.getElementById('outputsTab').classList.remove('active');
+            } else {
+                document.getElementById('outputsTab').classList.add('active');
+                document.getElementById('cachedSessionsTab').classList.remove('active');
+            }
+        }
+
+        // Format time
+        function formatTime(seconds) {
+            if (!seconds || seconds < 0) return 'Calculating...';
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            
+            if (hours > 0) {
+                return `${hours}h ${minutes}m`;
+            } else if (minutes > 0) {
+                return `${minutes}m ${secs}s`;
+            } else {
+                return `${secs}s`;
+            }
+        }
+
+        // Generate audiobook
+        document.getElementById('generateForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const formData = new FormData(e.target);
+            const generateBtn = document.getElementById('generateBtn');
+
+            // Validation
+            const bookText = formData.get('book_text');
+            const novelFile = formData.get('novel_file');
+            const refText = formData.get('ref_text');
+            const refAudioFile = formData.get('ref_audio_file');
+            const refAudioUrl = formData.get('ref_audio_url');
+
+            if (!bookText && !novelFile.name) {
+                showAlert('Please provide book text or upload a file', 'error');
+                return;
+            }
+
+            if (!refText) {
+                showAlert('Please provide reference text', 'error');
+                return;
+            }
+
+            if (!refAudioFile.name && !refAudioUrl) {
+                showAlert('Please provide reference audio (upload or URL)', 'error');
+                return;
+            }
+
+            // Disable button
+            generateBtn.disabled = true;
+            generateBtn.innerHTML = '<span class="spinner"></span> Starting...';
+
+            try {
+                const response = await fetch('/generate', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    currentSessionId = data.session_id;
+                    showAlert('✅ Generation started!', 'success');
+                    
+                    // Show progress container
+                    document.getElementById('progressContainer').classList.add('active');
+                    
+                    // Start polling
+                    startProgressPolling(currentSessionId);
+                } else {
+                    showAlert('❌ ' + data.error, 'error');
+                    generateBtn.disabled = false;
+                    generateBtn.innerHTML = '🚀 Generate Audiobook';
+                }
+            } catch (error) {
+                showAlert('❌ Failed to start generation: ' + error.message, 'error');
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '🚀 Generate Audiobook';
+            }
+        });
+
+        // Start progress polling
+        function startProgressPolling(sessionId) {
+            if (progressInterval) clearInterval(progressInterval);
+
+            progressInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`/progress/${sessionId}`);
+                    const data = await response.json();
+
+                    updateProgress(data, sessionId);
+
+                    // Stop polling if completed or error
+                    if (data.audio_file || data.error) {
+                        clearInterval(progressInterval);
+                        document.getElementById('generateBtn').disabled = false;
+                        document.getElementById('generateBtn').innerHTML = '🚀 Generate Audiobook';
+                        
+                        if (data.audio_file) {
+                            showAlert('🎉 Audiobook completed!', 'success');
+                            refreshOutputFiles();
+                        }
+                        
+                        if (data.error) {
+                            showAlert('❌ Generation failed: ' + data.error, 'error');
+                        }
+                    }
+
+                    // Stop polling if paused
+                    if (data.is_paused) {
+                        clearInterval(progressInterval);
+                        showAlert('⏸️ Generation paused', 'warning');
+                        refreshCachedSessions();
+                    }
+                } catch (error) {
+                    console.error('Progress poll error:', error);
+                }
+            }, 2000);
+        }
+
+        // Update progress display
+        function updateProgress(data, sessionId) {
+            const progress = data.progress || 0;
+            const progressBar = document.getElementById('progressBar');
+            const progressInfo = document.getElementById('progressInfo');
+            const progressStatus = document.getElementById('progressStatus');
+            const progressBadge = document.getElementById('progressBadge');
+            const sessionActions = document.getElementById('sessionActions');
+
+            // Update progress bar
+            progressBar.style.width = progress + '%';
+            progressBar.textContent = progress + '%';
+
+            // Update status
+            if (data.error) {
+                progressStatus.textContent = 'Error';
+                progressBadge.className = 'status-badge status-error';
+                progressBadge.textContent = 'Error';
+            } else if (data.audio_file) {
+                progressStatus.textContent = 'Completed!';
+                progressBadge.className = 'status-badge status-completed';
+                progressBadge.textContent = 'Completed';
+            } else if (data.is_paused) {
+                progressStatus.textContent = 'Paused';
+                progressBadge.className = 'status-badge status-paused';
+                progressBadge.textContent = 'Paused';
+            } else if (data.generating) {
+                progressStatus.textContent = 'Generating...';
+                progressBadge.className = 'status-badge status-generating';
+                progressBadge.textContent = 'Generating';
+            }
+
+            // Update info
+            const chunks = `${data.processed_chunks || 0} / ${data.total_chunks || 0} chunks`;
+            const timeRemaining = data.estimated_time_remaining 
+                ? `⏱️ ${formatTime(data.estimated_time_remaining)} remaining`
+                : '';
+            
+            progressInfo.innerHTML = `${chunks} ${timeRemaining ? '• ' + timeRemaining : ''}`;
+
+            // Update action buttons
+            sessionActions.innerHTML = '';
+            
+            if (data.generating && !data.pause_requested) {
+                const pauseBtn = document.createElement('button');
+                pauseBtn.className = 'btn btn-warning btn-sm';
+                pauseBtn.innerHTML = '⏸️ Pause';
+                pauseBtn.onclick = () => pauseGeneration(sessionId);
+                sessionActions.appendChild(pauseBtn);
+            }
+
+            if (data.pause_requested) {
+                const info = document.createElement('span');
+                info.style.color = 'var(--warning)';
+                info.innerHTML = '⏸️ Pausing (completing current chunk)...';
+                sessionActions.appendChild(info);
+            }
+
+            if (data.is_paused || data.can_resume) {
+                const resumeBtn = document.createElement('button');
+                resumeBtn.className = 'btn btn-success btn-sm';
+                resumeBtn.innerHTML = '▶️ Resume';
+                resumeBtn.onclick = () => resumeGeneration(sessionId);
+                sessionActions.appendChild(resumeBtn);
+            }
+
+            if (data.audio_file) {
+                const downloadBtn = document.createElement('button');
+                downloadBtn.className = 'btn btn-primary btn-sm';
+                downloadBtn.innerHTML = '⬇️ Download';
+                downloadBtn.onclick = () => window.location.href = `/outputs/${data.audio_file}`;
+                sessionActions.appendChild(downloadBtn);
+            }
+        }
+
+        // Pause generation
+        async function pauseGeneration(sessionId) {
+            try {
+                const response = await fetch(`/pause/${sessionId}`, { method: 'POST' });
+                const data = await response.json();
+
+                if (response.ok) {
+                    showAlert('⏸️ Pause requested - completing current chunk...', 'warning');
+                } else {
+                    showAlert('❌ ' + data.error, 'error');
+                }
+            } catch (error) {
+                showAlert('❌ Failed to pause: ' + error.message, 'error');
+            }
+        }
+
+        // Resume generation
+        async function resumeGeneration(sessionId) {
+            try {
+                const response = await fetch(`/resume/${sessionId}`, { method: 'POST' });
+                const data = await response.json();
+
+                if (response.ok) {
+                    showAlert(`▶️ Resumed from ${data.progress}%`, 'success');
+                    currentSessionId = sessionId;
+                    document.getElementById('progressContainer').classList.add('active');
+                    startProgressPolling(sessionId);
+                } else {
+                    showAlert('❌ ' + data.error, 'error');
+                }
+            } catch (error) {
+                showAlert('❌ Failed to resume: ' + error.message, 'error');
+            }
+        }
+
+        // Delete cache
+        async function deleteCache(sessionId) {
+            if (!confirm('Delete cached progress? This cannot be undone.')) return;
+
+            try {
+                const response = await fetch(`/sessions/${sessionId}/cache`, { method: 'DELETE' });
+                const data = await response.json();
+
+                if (response.ok) {
+                    showAlert('🗑️ Cache deleted', 'info');
+                    refreshCachedSessions();
+                } else {
+                    showAlert('❌ ' + data.error, 'error');
+                }
+            } catch (error) {
+                showAlert('❌ Failed to delete: ' + error.message, 'error');
+            }
+        }
+
+        // Load cached sessions
+        async function refreshCachedSessions() {
+            try {
+                const response = await fetch('/sessions/cached');
+                const data = await response.json();
+
+                const container = document.getElementById('cachedSessions');
+                const countBadge = document.getElementById('cachedCount');
+
+                if (data.sessions && data.sessions.length > 0) {
+                    countBadge.textContent = data.sessions.length;
+                    
+                    container.innerHTML = data.sessions.map(session => `
+                        <div class="session-card">
+                            <div class="session-header">
+                                <span class="session-id">${session.id}</span>
+                                <span class="status-badge status-paused">Paused</span>
+                            </div>
+                            <div class="session-progress">
+                                <div class="session-progress-fill" style="width: ${session.progress_percentage || 0}%"></div>
+                            </div>
+                            <div class="session-meta">
+                                <span>📊 ${session.progress_percentage || 0}%</span>
+                                <span>📦 ${session.processed_chunks || 0}/${session.total_chunks || 0}</span>
+                                <span>🌐 ${session.language || 'English'}</span>
+                            </div>
+                            <div class="session-actions">
+                                <button class="btn btn-success btn-sm" onclick="resumeGeneration('${session.id}')">
+                                    ▶️ Resume
+                                </button>
+                                <button class="btn btn-danger btn-sm" onclick="deleteCache('${session.id}')">
+                                    🗑️ Delete
+                                </button>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    countBadge.textContent = '0';
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">💾</div>
+                            <p>No paused or resumable sessions</p>
+                        </div>
+                    `;
+                }
+
+                document.getElementById('sessionCount').textContent = data.sessions.length;
+            } catch (error) {
+                console.error('Failed to load cached sessions:', error);
+            }
+        }
+
+        // Load output files
+        async function refreshOutputFiles() {
+            try {
+                const response = await fetch('/outputs');
+                const data = await response.json();
+
+                const container = document.getElementById('completedFiles');
+                const countBadge = document.getElementById('outputCount');
+
+                if (data.files && data.files.length > 0) {
+                    countBadge.textContent = data.files.length;
+                    
+                    container.innerHTML = data.files.map(filename => `
+                        <div class="session-card">
+                            <div class="session-header">
+                                <span style="font-weight: 600;">🎵 ${filename}</span>
+                                <span class="status-badge status-completed">Completed</span>
+                            </div>
+                            <div class="session-actions">
+                                <button class="btn btn-primary btn-sm" onclick="window.location.href='/outputs/${filename}'">
+                                    ⬇️ Download
+                                </button>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    countBadge.textContent = '0';
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">🎵</div>
+                            <p>No completed audiobooks yet</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Failed to load output files:', error);
+            }
+        }
+
+        // Refresh all
+        function refreshAll() {
+            refreshCachedSessions();
+            refreshOutputFiles();
+        }
+
+        // Initialize on page load
+        window.addEventListener('load', () => {
+            refreshCachedSessions();
+            refreshOutputFiles();
+
+            // Auto-refresh every 30 seconds
+            setInterval(refreshCachedSessions, 30000);
+            setInterval(refreshOutputFiles, 30000);
+        });
+    </script>
+</body>
+</html>
