@@ -89,7 +89,7 @@ PRIVATE_IP_NETWORKS = [
 ]
 
 # ────────────────────────────────────────────────
-# Loadin Da Model
+# Load the Model with Flash Attention 2
 # ────────────────────────────────────────────────
 tts_model = None
 try:
@@ -97,12 +97,48 @@ try:
     tts_model = Qwen3TTSModel.from_pretrained(
         "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         device_map="cuda:0",
-        dtype=torch.bfloat16
+        dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",  # memory & speed improvement
     )
     logger.info("Model loaded successfully")
 except Exception as exc:
     logger.error(f"Failed to load model: {exc}")
     tts_model = None
+
+# ────────────────────────────────────────────────
+# Dynamic VRAM-aware chunk sizing
+# ────────────────────────────────────────────────
+def get_max_chars_per_chunk():
+    """Returns safe max characters per generate_voice_clone call based on VRAM"""
+    if not torch.cuda.is_available():
+        logger.warning("No CUDA detected → using conservative chunk size")
+        return 700
+
+    try:
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        device_name = torch.cuda.get_device_properties(0).name
+
+        # Conservative but aggressive scaling (leaves ~1.5–2.5 GB headroom)
+        if vram_gb <= 9:        # 6–8 GB cards (RTX 3060, laptop GPUs)
+            return 650
+        elif vram_gb <= 13:     # 10–12 GB (RTX 3080, 4070)
+            return 1400
+        elif vram_gb <= 17:     # 16 GB (RTX 3090 Ti, 4080)
+            return 2300
+        elif vram_gb <= 25:     # 24 GB (RTX 4090, A6000)
+            return 4000
+        else:                   # 32 GB+ (A100, H100, etc.)
+            return 6000
+
+    except Exception as e:
+        logger.warning(f"VRAM detection failed: {e} → falling back to safe default")
+        return 800
+
+
+MAX_CHARS_PER_CHUNK = get_max_chars_per_chunk()
+logger.info(f"VRAM-aware chunking enabled → max ~{MAX_CHARS_PER_CHUNK} characters per batch "
+            f"on {torch.cuda.get_device_properties(0).name if torch.cuda.is_available() else 'CPU'} "
+            f"({torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f} GB VRAM)")
 
 # ────────────────────────────────────────────────
 # Session Management Stuff
@@ -173,7 +209,7 @@ threading.Thread(target=periodic_cleanup_task, daemon=True).start()
 
 
 # ────────────────────────────────────────────────
-# Sec Def is here
+# Security Defenses
 # ────────────────────────────────────────────────
 
 def is_private_ip_address(ip_str: str) -> bool:
@@ -318,39 +354,63 @@ def generate_audiobook_in_background(
             return
 
         logger.info(f"Session {session.id}: processing {len(sentences)} sentences")
-        
-        # Initialize chunk counters
-        batch_size = 5
-        session.total_chunks = (len(sentences) + batch_size - 1) // batch_size
-        session.processed_chunks = 0
 
         audio_chunks = []
+        processed_sentences = 0
+        chunk_count = 0
 
-        for i in range(0, len(sentences), batch_size):
+        i = 0
+        while i < len(sentences):
             if not session.is_generating:
                 logger.info(f"Session {session.id}: generation cancelled by user")
                 return
 
-            batch = sentences[i:i + batch_size]
-            languages = [language] * len(batch)
+            # Build largest possible chunk by character count
+            chunk = []
+            current_chars = 0
+            while (i < len(sentences) and
+                   current_chars + len(sentences[i]) <= MAX_CHARS_PER_CHUNK and
+                   len(chunk) < 30):  # safety cap on sentence count per call
+                chunk.append(sentences[i])
+                current_chars += len(sentences[i])
+                i += 1
+
+            # Fallback: extremely long single sentence
+            if not chunk:
+                chunk = [sentences[i]]
+                i += 1
+
+            chunk_count += 1
+            languages = [language] * len(chunk)
+
+            logger.info(f"Session {session.id}: Chunk {chunk_count} → {len(chunk)} sentences (~{current_chars:,} chars)")
 
             try:
                 wavs, sample_rate = tts_model.generate_voice_clone(
-                    text=batch,
+                    text=chunk,
                     language=languages,
                     ref_audio=reference_audio_path,
                     ref_text=reference_transcript,
                 )
                 audio_chunks.extend(wavs)
-                processed = i + len(batch)
-                session.processed_chunks += 1
-                session.progress_percentage = min(round((processed / len(sentences)) * 100), 99)
-                
-                elapsed_time = time.time() - session.start_time
+
+                processed_sentences += len(chunk)
+                session.processed_chunks = chunk_count
+                session.progress_percentage = min(round((processed_sentences / len(sentences)) * 100), 99)
+
+                # Time estimation
+                elapsed = time.time() - session.start_time
                 if session.processed_chunks > 0:
-                    avg_time_per_chunk = elapsed_time / session.processed_chunks
-                    chunks_remaining = session.total_chunks - session.processed_chunks
-                    session.estimated_time_remaining = round(avg_time_per_chunk * chunks_remaining)
+                    avg_time_per_chunk = elapsed / session.processed_chunks
+                    sentences_remaining = len(sentences) - processed_sentences
+                    est_remaining_chunks = max(1, sentences_remaining // max(len(chunk), 5))
+                    session.estimated_time_remaining = round(avg_time_per_chunk * est_remaining_chunks)
+
+            except torch.cuda.OutOfMemoryError:
+                logger.error("CUDA OOM during generation")
+                session.error_message = "Out of GPU memory. Try a smaller book or close other GPU apps."
+                session.is_generating = False
+                return
             except Exception as exc:
                 logger.error(f"Batch generation failed: {exc}")
                 session.error_message = f"Generation error: {str(exc)}"
@@ -370,6 +430,7 @@ def generate_audiobook_in_background(
         session.output_filename = filename
         session.progress_percentage = 100
         session.is_generating = False
+
         if reference_audio_path and os.path.exists(reference_audio_path) and reference_audio_path.startswith(TEMP_DIRECTORY):
             try:
                 os.remove(reference_audio_path)
@@ -879,23 +940,53 @@ def start_audiobook_generation():
 
         elif 'novel_file' in request.files and request.files['novel_file'].filename:
             file = request.files['novel_file']
-            valid, msg = is_valid_uploaded_file(file, MAX_BOOK_FILE_SIZE, '.txt')
+            valid, msg = is_valid_uploaded_file(file, MAX_BOOK_FILE_SIZE, None)  # no required extension anymore
             if not valid:
                 return jsonify({'error': msg}), 400
 
+            filename_lower = file.filename.lower()
             try:
-                content = file.read().decode('utf-8', errors='ignore').strip()
-                if not content:
-                    return jsonify({'error': 'Uploaded book file is empty'}), 400
-                if len(content) > MAX_TEXT_CHARACTERS:
-                    return jsonify({'error': f'Book text too long (max ~500KB)'}), 400
-                book_text = content
+                if filename_lower.endswith('.pdf'):
+                    # ── PDF extraction with PyMuPDF ──
+                    stream = file.read()  # read into memory (10 MiB max → safe)
+                    doc = fitz.open(stream=stream, filetype="pdf")
+                    if doc.needs_pass:
+                        doc.close()
+                        return jsonify({'error': 'Encrypted/protected PDF — cannot extract text'}), 400
+
+                    pages_text = []
+                    for page in doc:
+                        text = page.get_text("text").strip()
+                        if text:
+                            pages_text.append(text)
+                    doc.close()
+
+                    if not pages_text:
+                        return jsonify({'error': 'No readable text found in PDF'}), 400
+
+                    book_text = "\n\n".join(pages_text)
+
+                elif filename_lower.endswith('.txt'):
+                    # existing TXT path
+                    content = file.read().decode('utf-8', errors='ignore').strip()
+                    if not content:
+                        return jsonify({'error': 'Uploaded book file is empty'}), 400
+                    book_text = content
+
+                else:
+                    return jsonify({'error': 'Unsupported file type — only .txt and .pdf allowed'}), 400
+
+                if len(book_text) > MAX_TEXT_CHARACTERS:
+                    return jsonify({'error': f'Extracted text too long (max ~{MAX_TEXT_CHARACTERS//1000}k characters)'}), 400
+
+            except fitz.FileDataError:
+                return jsonify({'error': 'Invalid or corrupted PDF file'}), 400
             except Exception as exc:
-                logger.error(f"Failed to read uploaded book file: {exc}")
-                return jsonify({'error': 'Failed to read book file'}), 400
+                logger.error(f"Failed to process uploaded book file: {exc}")
+                return jsonify({'error': 'Failed to read/process book file'}), 400
 
         else:
-            return jsonify({'error': 'Provide book text or upload a .txt file'}), 400
+            return jsonify({'error': 'Provide book text or upload a .txt / .pdf file'}), 400
 
         ref_audio_path = None
         temp_ref_path = None
@@ -1020,10 +1111,12 @@ def internal_server_error(exc):
     logger.error(f"Internal server error: {exc}", exc_info=True)
     return jsonify({'error': 'An internal server error occurred'}), 500
 
+
 def open_browser(host, port):
     time.sleep(0.5)
     url = f"http://{host}:{port}"
     webbrowser.open(url)
+
 
 if __name__ == '__main__':
     if os.environ.get('SECRET_KEY') is None:
@@ -1039,6 +1132,7 @@ if __name__ == '__main__':
     logger.info(f"Starting Booklet server on {host}:{port}")
     logger.info(f"Output directory: {OUTPUT_DIRECTORY}")
     logger.info(f"Files retained for: {FILE_RETENTION_SECONDS // 3600} hours")
+    logger.info(f"Dynamic max chunk size: ~{MAX_CHARS_PER_CHUNK} characters")
 
     threading.Thread(
         target=open_browser,

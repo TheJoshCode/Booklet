@@ -10,6 +10,7 @@ dependencies = [
     "flask-wtf>=1.2.2",
     "numpy>=2.3.5",
     "packaging>=24.1",
+    "pymupdf>=1.26.7",
     "qwen-tts>=0.0.5",
     "setuptools>=70.2.0",
     "soundfile>=0.13.1",
