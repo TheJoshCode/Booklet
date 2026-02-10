@@ -22,11 +22,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtGui import QIcon, QFont, QPalette, QColor
-try:
-    import torch
-    CUDA_AVAILABLE = torch.cuda.is_available()
-except:
-    CUDA_AVAILABLE = False
+
+CUDA_AVAILABLE = True
 
 from zipvoice.luxvoice import LuxTTS, get_memory_info, clear_memory, unload_model
 #from zipvoice.modeling_utils import get_memory_info, clear_memory, unload_model
@@ -290,11 +287,11 @@ class GenerationThread(QThread):
                     mem_info = get_memory_info()
                     if should_reload_model(mem_info) or (chunk_num % MODEL_RELOAD_INTERVAL == 0 and chunk_num>0):
                         self.log_verbose("🔄 Reloading model due to memory...")
-                        try:
+                        """try:
                             unload_model()
                         except Exception:
                             pass
-                        self.load_model()
+                        self.load_model()"""
                         encoded_prompt = self.lux_tts.encode_prompt(self.voice_transcription, self.voice_clip, rms=0.01, duration=actual_ref_duration)
 
                     # Generate with retry
@@ -363,14 +360,8 @@ class GenerationThread(QThread):
 
                     frame_rate = getattr(self.lux_tts, 'sample_rate', 48000)
                     seg = AudioSegment(raw_bytes, frame_rate=frame_rate, sample_width=sample_width, channels=channels)
-                    wav_file = os.path.join(chunks_dir, f"chunk_{chunk_num:06d}.wav")
                     mp3_file = os.path.join(chunks_dir, f"chunk_{chunk_num:06d}.mp3")
-                    # Export WAV (preserve PCM) and MP3 (for concatenation/streaming)
-                    try:
-                        seg.export(wav_file, format="wav")
-                        self.log_verbose(f"💾 Saved WAV: {wav_file}")
-                    except Exception as e:
-                        self.log_verbose(f"⚠️ Failed to save WAV {wav_file}: {e}")
+                    # Export MP3 (for concatenation/streaming)
                     try:
                         seg.export(mp3_file, format="mp3", bitrate="192k")
                         self.log_verbose(f"💾 Saved MP3: {mp3_file}")
@@ -387,10 +378,10 @@ class GenerationThread(QThread):
 
                 # Finished batch: unload model and clear memory before next batch
                 self.log_verbose(f"🧹 Finished batch {batch_index} — unloading model and cleaning memory")
-                try:
+                """try:
                     unload_model()
                 except Exception:
-                    pass
+                    pass"""
                 clear_memory(self.log_verbose)
                 gc.collect()
 
@@ -399,7 +390,7 @@ class GenerationThread(QThread):
             concatenate_chunks(chunks_dir, final_output_file)
             state["status"] = "completed"
             save_state(state_path, state)
-            unload_model()
+            #unload_model()
             self.finished.emit(True, f"Audiobook ready: {final_output_file}", final_output_file)
 
         except Exception as e:
