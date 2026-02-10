@@ -9,6 +9,7 @@ import subprocess
 import platform
 import pdfplumber
 import nltk
+import numpy as np
 from docx import Document
 from bs4 import BeautifulSoup
 import ebooklib
@@ -271,13 +272,54 @@ class GenerationThread(QThread):
                             raise
 
                 wav_np = wav.cpu().numpy().squeeze()
-                if len(wav_np)<100:
+                if len(wav_np) < 100:
                     self.log_verbose(f"⚠️ Generated audio too short ({len(wav_np)} samples)")
                     state["failed_chunks"].append(chunk_num)
                     save_state(state_path, state)
                     continue
 
-                seg = AudioSegment(wav_np.tobytes(), frame_rate=48000, sample_width=4, channels=1)
+                # Convert model output (usually float32 in -1..1) to PCM int16 for pydub
+                try:
+                    if wav_np.ndim > 1:
+                        # multi-channel
+                        if np.issubdtype(wav_np.dtype, np.floating):
+                            wav_int16 = (np.clip(wav_np, -1.0, 1.0) * 32767).astype(np.int16)
+                        else:
+                            wav_int16 = wav_np.astype(np.int16)
+                        raw_bytes = wav_int16.tobytes()
+                        sample_width = 2
+                        channels = wav_int16.shape[1]
+                    else:
+                        # mono
+                        if np.issubdtype(wav_np.dtype, np.floating):
+                            wav_int16 = (np.clip(wav_np, -1.0, 1.0) * 32767).astype(np.int16)
+                            raw_bytes = wav_int16.tobytes()
+                            sample_width = 2
+                            channels = 1
+                        else:
+                            # integer types
+                            if wav_np.dtype == np.int16:
+                                raw_bytes = wav_np.tobytes()
+                                sample_width = 2
+                                channels = 1
+                            elif wav_np.dtype == np.int32:
+                                raw_bytes = wav_np.tobytes()
+                                sample_width = 4
+                                channels = 1
+                            else:
+                                wav_int16 = wav_np.astype(np.int16)
+                                raw_bytes = wav_int16.tobytes()
+                                sample_width = 2
+                                channels = 1
+                except Exception:
+                    # Fallback: try a safe conversion to int16
+                    wav_int16 = (np.clip(wav_np, -1.0, 1.0) * 32767).astype(np.int16)
+                    raw_bytes = wav_int16.tobytes()
+                    sample_width = 2
+                    channels = 1
+
+                frame_rate = getattr(self.lux_tts, 'sample_rate', 48000)
+                seg = AudioSegment(raw_bytes, frame_rate=frame_rate, sample_width=sample_width, channels=channels)
                 chunk_file = os.path.join(chunks_dir, f"chunk_{chunk_num:04d}.mp3")
                 seg.export(chunk_file, format="mp3")
                 del wav, wav_np, seg
