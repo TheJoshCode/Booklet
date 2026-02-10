@@ -21,14 +21,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtGui import QIcon, QFont, QPalette, QColor
-try:
-    import torch
-    CUDA_AVAILABLE = torch.cuda.is_available()
-except:
-    CUDA_AVAILABLE = False
-
-from zipvoice.luxvoice import LuxTTS, get_memory_info, clear_memory, unload_model
-#from zipvoice.modeling_utils import get_memory_info, clear_memory, unload_model
+import torch
+from transformers import pipeline
+import torchaudio
 from pydub import AudioSegment
 
 # Ensure NLTK tokenizer
@@ -43,8 +38,7 @@ CHUNKS_BEFORE_CLEANUP = 10
 MODEL_RELOAD_INTERVAL = 50
 MAX_RETRIES = 2
 
-"""
-# --- Helpers ---
+# --- Helper Functions ---
 def get_memory_info():
     proc = psutil.Process()
     mem_info = proc.memory_info()
@@ -59,10 +53,21 @@ def clear_memory(verbose=None):
     if verbose:
         verbose("🧹 Running memory cleanup...")
     collected = gc.collect()
+    try:
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    except:
+        pass
     if verbose:
         mem = get_memory_info()
         verbose(f"   Collected {collected} objects | RAM: {mem['process_rss_mb']:.1f}MB | Available: {mem['system_available_mb']:.1f}MB")
-"""
+
+def unload_model():
+    """Placeholder for unload model functionality"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    gc.collect()
 
 def should_reload_model(mem_info):
     return mem_info['system_available_mb'] < MEMORY_THRESHOLD_MB
@@ -148,7 +153,7 @@ class GenerationThread(QThread):
         self.ref_duration = ref_duration
         self.num_steps = num_steps
         self.resume_dir = resume_dir
-        self.lux_tts = None
+        self.tts_pipeline = None
 
     def log_verbose(self, msg):
         self.verbose_log.emit(msg)
@@ -158,10 +163,12 @@ class GenerationThread(QThread):
         self.log_verbose(f"💾 Memory Status {ctx}: {mem['process_rss_mb']:.1f}MB RAM | {mem['system_available_mb']:.1f}MB avail")
 
     def load_model(self):
-        self.log_verbose("🔄 Loading LuxTTS model...")
-        device = 'cuda' if CUDA_AVAILABLE else 'cpu'
-        self.log_verbose(f"   Using device: {device}")
-        self.lux_tts = LuxTTS('YatharthS/LuxTTS', device=device)
+        self.log_verbose("🔄 Loading chatterbox-turbo TTS model...")
+        self.tts_pipeline = pipeline(
+            "text-to-speech",
+            model="ResembleAI/chatterbox-turbo",
+            device=0 if torch.cuda.is_available() else -1
+        )
         self.log_verbose("✅ Model loaded")
 
     """def unload_model(self):
@@ -223,11 +230,15 @@ class GenerationThread(QThread):
 
             self.load_model()
 
-            # Encode voice
-            self.status_update.emit("Encoding voice sample...")
-            audio_data, sr = self.lux_tts._read_audio(self.voice_clip)
-            actual_ref_duration = min(self.ref_duration, int(len(audio_data)/sr))
-            encoded_prompt = self.lux_tts.encode_prompt(self.voice_transcription, self.voice_clip, rms=0.005, duration=actual_ref_duration)
+            # Encode voice (chatterbox-turbo uses voice clone with speaker embeddings)
+            self.status_update.emit("Processing voice sample...")
+            self.log_verbose("🎤 Processing voice sample")
+            
+            # Load reference audio
+            audio_data, sr = torchaudio.load(self.voice_clip)
+            if sr != 24000:
+                audio_data = torchaudio.transforms.Resample(sr, 24000)(audio_data)
+            audio_data = audio_data.squeeze(0).cpu().numpy()
 
             # Split text
             chunks = split_text_into_chunks(book_text, max_length=adaptive_chunk_size())
@@ -254,23 +265,37 @@ class GenerationThread(QThread):
                     self.log_verbose("🔄 Reloading model due to memory...")
                     unload_model()
                     self.load_model()
-                    encoded_prompt = self.lux_tts.encode_prompt(self.voice_transcription, self.voice_clip, rms=0.01, duration=actual_ref_duration)
 
                 # Generate with retry
                 for attempt in range(MAX_RETRIES+1):
                     try:
-                        wav = self.lux_tts.generate_speech(chunk, encoded_prompt, num_steps=self.num_steps)
+                        # Generate speech using chatterbox-turbo with voice cloning
+                        output = self.tts_pipeline(
+                            chunk,
+                            voice=self.voice_clip  # Use the voice sample directly for cloning
+                        )
+                        wav = output["audio"]
+                        sr = output.get("sampling_rate", 24000)
                         break
                     except RuntimeError as e:
                         self.log_verbose(f"🔥 Error on chunk {chunk_num}: {e}")
                         unload_model()
                         gc.collect()
                         self.load_model()
-                        encoded_prompt = self.lux_tts.encode_prompt(self.voice_transcription, self.voice_clip, rms=0.01, duration=actual_ref_duration)
                         if attempt == MAX_RETRIES:
                             raise
 
-                wav_np = wav.cpu().numpy().squeeze()
+                # Convert to numpy if needed
+                if isinstance(wav, torch.Tensor):
+                    wav_np = wav.cpu().numpy().squeeze()
+                else:
+                    wav_np = wav
+                
+                # Resample if needed
+                if sr != 48000:
+                    wav_torch = torch.from_numpy(wav_np).float()
+                    wav_torch = torchaudio.transforms.Resample(sr, 48000)(wav_torch.unsqueeze(0))
+                    wav_np = wav_torch.squeeze(0).numpy()
                 if len(wav_np)<100:
                     self.log_verbose(f"⚠️ Generated audio too short ({len(wav_np)} samples)")
                     state["failed_chunks"].append(chunk_num)
