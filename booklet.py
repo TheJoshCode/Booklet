@@ -34,9 +34,9 @@ from pydub import AudioSegment
 
 # Ensure NLTK tokenizer
 try:
-    nltk.download('punkt', quiet=True)
+    nltk.download('punkt_tab', quiet=True)
 except:
-    nltk.download('punkt', quiet=True)
+    nltk.download('punkt_tab', quiet=True)
 
 # --- Config ---
 MEMORY_THRESHOLD_MB = 500
@@ -144,13 +144,14 @@ class GenerationThread(QThread):
     finished = Signal(bool, str, str)
     verbose_log = Signal(str)
 
-    def __init__(self, text_file, voice_clip, voice_transcription, ref_duration, num_steps, resume_dir=None):
+    def __init__(self, text_file, voice_clip, voice_transcription, ref_duration, num_steps, batch_size=BATCH_SIZE, resume_dir=None):
         super().__init__()
         self.text_file = text_file
         self.voice_clip = voice_clip
         self.voice_transcription = voice_transcription
         self.ref_duration = ref_duration
         self.num_steps = num_steps
+        self.batch_size = batch_size
         self.resume_dir = resume_dir
         self.lux_tts = None
 
@@ -256,13 +257,18 @@ class GenerationThread(QThread):
             save_state(state_path, state)
             self.status_update.emit(f"{total_chunks} chunks prepared on disk")
 
-            # Process chunks in batches to limit VRAM usage
-            for batch_start in range(0, total_chunks, BATCH_SIZE):
-                batch_files = chunk_files[batch_start:batch_start + BATCH_SIZE]
-                batch_index = (batch_start // BATCH_SIZE) + 1
-                self.log_verbose(f"📦 Starting batch {batch_index} ({len(batch_files)} chunks)")
+            # Process chunks in batches to limit VRAM usage. If batch_size == 1, this effectively loads and unloads per file.
+            for batch_start in range(0, total_chunks, self.batch_size):
+                batch_files = chunk_files[batch_start:batch_start + self.batch_size]
+                batch_index = (batch_start // self.batch_size) + 1
+                self.log_verbose(f"📦 Starting batch {batch_index} ({len(batch_files)} chunks) with batch_size={self.batch_size}")
                 # (re)load model for this batch
                 self.load_model()
+                # Recompute encoded prompt for the newly loaded model
+                try:
+                    encoded_prompt = self.lux_tts.encode_prompt(self.voice_transcription, self.voice_clip, rms=0.01, duration=actual_ref_duration)
+                except Exception:
+                    encoded_prompt = self.lux_tts.encode_prompt(self.voice_transcription, self.voice_clip, rms=0.005, duration=actual_ref_duration)
 
                 for cfname in batch_files:
                     # chunk file names are chunk_000001.txt
@@ -273,93 +279,111 @@ class GenerationThread(QThread):
                         continue
 
                     self.status_update.emit(f"Generating chunk {chunk_num}/{total_chunks}")
+                    self.log_verbose(f"📄 Loading chunk file: {cfname}")
                     with open(os.path.join(text_chunks_dir, cfname), 'r', encoding='utf-8') as cfh:
                         chunk = cfh.read()
                     self.log_verbose(f"📝 Chunk {chunk_num} ({len(chunk)} chars)")
 
-                # Memory cleanup
-                if chunk_num % CHUNKS_BEFORE_CLEANUP == 0:
-                    clear_memory(self.log_verbose)
-                mem_info = get_memory_info()
-                if should_reload_model(mem_info) or (chunk_num % MODEL_RELOAD_INTERVAL == 0 and chunk_num>0):
-                    self.log_verbose("🔄 Reloading model due to memory...")
-                    unload_model()
-                    self.load_model()
-                    encoded_prompt = self.lux_tts.encode_prompt(self.voice_transcription, self.voice_clip, rms=0.01, duration=actual_ref_duration)
-
-                # Generate with retry
-                for attempt in range(MAX_RETRIES+1):
-                    try:
-                        wav = self.lux_tts.generate_speech(chunk, encoded_prompt, num_steps=self.num_steps)
-                        break
-                    except RuntimeError as e:
-                        self.log_verbose(f"🔥 Error on chunk {chunk_num}: {e}")
-                        unload_model()
-                        gc.collect()
+                    # Memory cleanup
+                    if chunk_num % CHUNKS_BEFORE_CLEANUP == 0:
+                        clear_memory(self.log_verbose)
+                    mem_info = get_memory_info()
+                    if should_reload_model(mem_info) or (chunk_num % MODEL_RELOAD_INTERVAL == 0 and chunk_num>0):
+                        self.log_verbose("🔄 Reloading model due to memory...")
+                        try:
+                            unload_model()
+                        except Exception:
+                            pass
                         self.load_model()
                         encoded_prompt = self.lux_tts.encode_prompt(self.voice_transcription, self.voice_clip, rms=0.01, duration=actual_ref_duration)
-                        if attempt == MAX_RETRIES:
-                            raise
 
-                wav_np = wav.cpu().numpy().squeeze()
-                if len(wav_np) < 100:
-                    self.log_verbose(f"⚠️ Generated audio too short ({len(wav_np)} samples)")
-                    state["failed_chunks"].append(chunk_num)
-                    save_state(state_path, state)
-                    continue
+                    # Generate with retry
+                    for attempt in range(MAX_RETRIES+1):
+                        try:
+                            wav = self.lux_tts.generate_speech(chunk, encoded_prompt, num_steps=self.num_steps)
+                            break
+                        except RuntimeError as e:
+                            self.log_verbose(f"🔥 Error on chunk {chunk_num}: {e}")
+                            try:
+                                unload_model()
+                            except Exception:
+                                pass
+                            gc.collect()
+                            self.load_model()
+                            encoded_prompt = self.lux_tts.encode_prompt(self.voice_transcription, self.voice_clip, rms=0.01, duration=actual_ref_duration)
+                            if attempt == MAX_RETRIES:
+                                raise
 
-                # Convert model output (usually float32 in -1..1) to PCM int16 for pydub
-                try:
-                    if wav_np.ndim > 1:
-                        # multi-channel
-                        if np.issubdtype(wav_np.dtype, np.floating):
-                            wav_int16 = (np.clip(wav_np, -1.0, 1.0) * 32767).astype(np.int16)
-                        else:
-                            wav_int16 = wav_np.astype(np.int16)
-                        raw_bytes = wav_int16.tobytes()
-                        sample_width = 2
-                        channels = wav_int16.shape[1]
-                    else:
-                        # mono
-                        if np.issubdtype(wav_np.dtype, np.floating):
-                            wav_int16 = (np.clip(wav_np, -1.0, 1.0) * 32767).astype(np.int16)
-                            raw_bytes = wav_int16.tobytes()
-                            sample_width = 2
-                            channels = 1
-                        else:
-                            # integer types
-                            if wav_np.dtype == np.int16:
-                                raw_bytes = wav_np.tobytes()
-                                sample_width = 2
-                                channels = 1
-                            elif wav_np.dtype == np.int32:
-                                raw_bytes = wav_np.tobytes()
-                                sample_width = 4
-                                channels = 1
+                    wav_np = wav.cpu().numpy().squeeze()
+                    if len(wav_np) < 100:
+                        self.log_verbose(f"⚠️ Generated audio too short ({len(wav_np)} samples)")
+                        state["failed_chunks"].append(chunk_num)
+                        save_state(state_path, state)
+                        continue
+
+                    # Convert model output (usually float32 in -1..1) to PCM int16 for pydub
+                    try:
+                        if wav_np.ndim > 1:
+                            # multi-channel
+                            if np.issubdtype(wav_np.dtype, np.floating):
+                                wav_int16 = (np.clip(wav_np, -1.0, 1.0) * 32767).astype(np.int16)
                             else:
                                 wav_int16 = wav_np.astype(np.int16)
+                            raw_bytes = wav_int16.tobytes()
+                            sample_width = 2
+                            channels = wav_int16.shape[1]
+                        else:
+                            # mono
+                            if np.issubdtype(wav_np.dtype, np.floating):
+                                wav_int16 = (np.clip(wav_np, -1.0, 1.0) * 32767).astype(np.int16)
                                 raw_bytes = wav_int16.tobytes()
                                 sample_width = 2
                                 channels = 1
-                except Exception:
-                    # Fallback: try a safe conversion to int16
-                    wav_int16 = (np.clip(wav_np, -1.0, 1.0) * 32767).astype(np.int16)
-                    raw_bytes = wav_int16.tobytes()
-                    sample_width = 2
-                    channels = 1
+                            else:
+                                # integer types
+                                if wav_np.dtype == np.int16:
+                                    raw_bytes = wav_np.tobytes()
+                                    sample_width = 2
+                                    channels = 1
+                                elif wav_np.dtype == np.int32:
+                                    raw_bytes = wav_np.tobytes()
+                                    sample_width = 4
+                                    channels = 1
+                                else:
+                                    wav_int16 = wav_np.astype(np.int16)
+                                    raw_bytes = wav_int16.tobytes()
+                                    sample_width = 2
+                                    channels = 1
+                    except Exception:
+                        # Fallback: try a safe conversion to int16
+                        wav_int16 = (np.clip(wav_np, -1.0, 1.0) * 32767).astype(np.int16)
+                        raw_bytes = wav_int16.tobytes()
+                        sample_width = 2
+                        channels = 1
 
-                frame_rate = getattr(self.lux_tts, 'sample_rate', 48000)
-                seg = AudioSegment(raw_bytes, frame_rate=frame_rate, sample_width=sample_width, channels=channels)
-                chunk_file = os.path.join(chunks_dir, f"chunk_{chunk_num:06d}.mp3")
-                seg.export(chunk_file, format="mp3")
-                del wav, wav_np, seg
-                gc.collect()
+                    frame_rate = getattr(self.lux_tts, 'sample_rate', 48000)
+                    seg = AudioSegment(raw_bytes, frame_rate=frame_rate, sample_width=sample_width, channels=channels)
+                    wav_file = os.path.join(chunks_dir, f"chunk_{chunk_num:06d}.wav")
+                    mp3_file = os.path.join(chunks_dir, f"chunk_{chunk_num:06d}.mp3")
+                    # Export WAV (preserve PCM) and MP3 (for concatenation/streaming)
+                    try:
+                        seg.export(wav_file, format="wav")
+                        self.log_verbose(f"💾 Saved WAV: {wav_file}")
+                    except Exception as e:
+                        self.log_verbose(f"⚠️ Failed to save WAV {wav_file}: {e}")
+                    try:
+                        seg.export(mp3_file, format="mp3", bitrate="192k")
+                        self.log_verbose(f"💾 Saved MP3: {mp3_file}")
+                    except Exception as e:
+                        self.log_verbose(f"⚠️ Failed to save MP3 {mp3_file}: {e}")
+                    del wav, wav_np, seg
+                    gc.collect()
 
-                state["completed_chunks"].append(chunk_num)
-                state["last_chunk"] = chunk_num
-                save_state(state_path, state)
-                self.chunk_progress.emit(int(chunk_num/total_chunks*100))
-                self.progress_update.emit(int(chunk_num/total_chunks*100))
+                    state["completed_chunks"].append(chunk_num)
+                    state["last_chunk"] = chunk_num
+                    save_state(state_path, state)
+                    self.chunk_progress.emit(int(chunk_num/total_chunks*100))
+                    self.progress_update.emit(int(chunk_num/total_chunks*100))
 
                 # Finished batch: unload model and clear memory before next batch
                 self.log_verbose(f"🧹 Finished batch {batch_index} — unloading model and cleaning memory")
@@ -899,6 +923,9 @@ class MainWindow(QMainWindow):
         
         self.steps_entry = ModernNumberInput("Steps:", 4)
         params_row.addWidget(self.steps_entry)
+
+        self.batch_entry = ModernNumberInput("Batch Size:", BATCH_SIZE)
+        params_row.addWidget(self.batch_entry)
         
         settings_layout.addLayout(params_row)
         
@@ -1029,11 +1056,13 @@ class MainWindow(QMainWindow):
         try:
             ref = int(self.ref_entry.text())
             steps = int(self.steps_entry.text())
-        except: return
+            batch_size = int(self.batch_entry.text())
+        except:
+            return
         if not all([text_file, voice_clip, transcription]): return
         self.verbose_log.clear()
         self.generate_btn.setEnabled(False)
-        self.thread = GenerationThread(text_file, voice_clip, transcription, ref, steps)
+        self.thread = GenerationThread(text_file, voice_clip, transcription, ref, steps, batch_size=batch_size)
         self.thread.status_update.connect(lambda t: self.status_label.setText(t))
         self.thread.progress_update.connect(lambda v: self.progress_bar.setValue(v))
         self.thread.chunk_progress.connect(lambda v: self.chunk_progress.setValue(v))
