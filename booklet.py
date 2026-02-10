@@ -43,6 +43,8 @@ MEMORY_THRESHOLD_MB = 500
 CHUNKS_BEFORE_CLEANUP = 10
 MODEL_RELOAD_INTERVAL = 50
 MAX_RETRIES = 2
+# Number of chunks to process per model load to limit VRAM usage
+BATCH_SIZE = 250
 
 """
 # --- Helpers ---
@@ -126,7 +128,8 @@ def adaptive_chunk_size():
 def concatenate_chunks(chunks_dir, output_file):
     combined = None
     for f in sorted(os.listdir(chunks_dir)):
-        if not f.endswith(".mp3"): continue
+        if not f.endswith(".mp3"):
+            continue
         audio = AudioSegment.from_mp3(os.path.join(chunks_dir, f))
         combined = audio if combined is None else combined + audio
         del audio
@@ -230,22 +233,49 @@ class GenerationThread(QThread):
             actual_ref_duration = min(self.ref_duration, int(len(audio_data)/sr))
             encoded_prompt = self.lux_tts.encode_prompt(self.voice_transcription, self.voice_clip, rms=0.005, duration=actual_ref_duration)
 
-            # Split text
+            # Split text into chunks and write each chunk to disk to avoid keeping huge lists in RAM
             chunks = split_text_into_chunks(book_text, max_length=adaptive_chunk_size())
-            state["total_chunks"] = len(chunks)
+            text_chunks_dir = os.path.join(run_dir, "text_chunks")
+            os.makedirs(text_chunks_dir, exist_ok=True)
+            # Only write chunk files if directory is empty (helps resume)
+            if not any(f.endswith('.txt') for f in os.listdir(text_chunks_dir)):
+                self.log_verbose(f"✂️ Writing {len(chunks)} text chunk files to disk...")
+                for i, chunk in enumerate(chunks):
+                    idx = i+1
+                    with open(os.path.join(text_chunks_dir, f"chunk_{idx:06d}.txt"), "w", encoding="utf-8") as cf:
+                        cf.write(chunk)
+            # free the large in-memory text objects
+            del chunks
+            del book_text
+            gc.collect()
+
+            # Determine total chunks from files on disk
+            chunk_files = sorted([f for f in os.listdir(text_chunks_dir) if f.endswith('.txt')])
+            total_chunks = len(chunk_files)
+            state["total_chunks"] = total_chunks
             save_state(state_path, state)
-            self.status_update.emit(f"{len(chunks)} chunks created")
+            self.status_update.emit(f"{total_chunks} chunks prepared on disk")
 
-            # Generate chunks
-            for i, chunk in enumerate(chunks):
-                chunk_num = i+1
-                if chunk_num in state["completed_chunks"]:
-                    self.log_verbose(f"⏭️ Skipping completed chunk {chunk_num}")
-                    self.chunk_progress.emit(int(chunk_num/len(chunks)*100))
-                    continue
+            # Process chunks in batches to limit VRAM usage
+            for batch_start in range(0, total_chunks, BATCH_SIZE):
+                batch_files = chunk_files[batch_start:batch_start + BATCH_SIZE]
+                batch_index = (batch_start // BATCH_SIZE) + 1
+                self.log_verbose(f"📦 Starting batch {batch_index} ({len(batch_files)} chunks)")
+                # (re)load model for this batch
+                self.load_model()
 
-                self.status_update.emit(f"Generating chunk {chunk_num}/{len(chunks)}")
-                self.log_verbose(f"📝 Chunk {chunk_num} ({len(chunk)} chars)")
+                for cfname in batch_files:
+                    # chunk file names are chunk_000001.txt
+                    chunk_num = int(cfname.split('_')[1].split('.')[0])
+                    if chunk_num in state["completed_chunks"]:
+                        self.log_verbose(f"⏭️ Skipping completed chunk {chunk_num}")
+                        self.chunk_progress.emit(int(chunk_num/total_chunks*100))
+                        continue
+
+                    self.status_update.emit(f"Generating chunk {chunk_num}/{total_chunks}")
+                    with open(os.path.join(text_chunks_dir, cfname), 'r', encoding='utf-8') as cfh:
+                        chunk = cfh.read()
+                    self.log_verbose(f"📝 Chunk {chunk_num} ({len(chunk)} chars)")
 
                 # Memory cleanup
                 if chunk_num % CHUNKS_BEFORE_CLEANUP == 0:
@@ -320,7 +350,7 @@ class GenerationThread(QThread):
 
                 frame_rate = getattr(self.lux_tts, 'sample_rate', 48000)
                 seg = AudioSegment(raw_bytes, frame_rate=frame_rate, sample_width=sample_width, channels=channels)
-                chunk_file = os.path.join(chunks_dir, f"chunk_{chunk_num:04d}.mp3")
+                chunk_file = os.path.join(chunks_dir, f"chunk_{chunk_num:06d}.mp3")
                 seg.export(chunk_file, format="mp3")
                 del wav, wav_np, seg
                 gc.collect()
@@ -328,8 +358,17 @@ class GenerationThread(QThread):
                 state["completed_chunks"].append(chunk_num)
                 state["last_chunk"] = chunk_num
                 save_state(state_path, state)
-                self.chunk_progress.emit(int(chunk_num/len(chunks)*100))
-                self.progress_update.emit(int(chunk_num/len(chunks)*100))
+                self.chunk_progress.emit(int(chunk_num/total_chunks*100))
+                self.progress_update.emit(int(chunk_num/total_chunks*100))
+
+                # Finished batch: unload model and clear memory before next batch
+                self.log_verbose(f"🧹 Finished batch {batch_index} — unloading model and cleaning memory")
+                try:
+                    unload_model()
+                except Exception:
+                    pass
+                clear_memory(self.log_verbose)
+                gc.collect()
 
             # Concatenate disk-backed
             self.status_update.emit("Concatenating audio (disk)...")
