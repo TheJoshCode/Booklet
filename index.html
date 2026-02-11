@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Booklet — TTS Generator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #111827;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #22d3ee;
+      --radius: 12px;
+    }
+    body { margin:0; min-height:100vh; font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); }
+    .app { display:grid; grid-template-columns:minmax(300px,600px) 1fr; gap:20px; padding:20px; max-width:1200px; margin:0 auto; }
+    @media (max-width:800px){ .app{ grid-template-columns:1fr; } }
+
+    .card { background: var(--panel); border:1px solid var(--border); border-radius: var(--radius); padding:24px; }
+    h1,h2 { margin:0 0 5px; font-size:24px; }
+    .subtitle { color:var(--muted); font-size:14px; margin-bottom:20px; }
+
+    label { display:block; font-size:12px; font-weight:600; margin-bottom:6px; color:#c7d2fe; }
+    .field { margin-bottom:16px; }
+    input,select { width:100%; background:#0f172a; border:1px solid var(--border); border-radius:8px; padding:10px; color:var(--text); outline:none; }
+    input:disabled, select:disabled { opacity:0.5; cursor:not-allowed; }
+
+    .controls { display:flex; gap:10px; margin-top:20px; }
+    button { flex:1; border:none; border-radius:8px; padding:10px; font-weight:600; cursor:pointer; background:#1f2937; color:white; }
+    button.primary { background: var(--accent); color:#020617; }
+    button.danger { background: #ef4444; color:white; }
+    button:hover { opacity:0.9; }
+
+    .history-list { display:flex; flex-direction:column; gap:8px; max-height:80vh; overflow-y:auto; }
+    .history-item { background: rgba(255,255,255,0.03); padding:10px; border-radius:6px; font-size:13px; display:flex; justify-content:space-between; align-items:center; }
+    .history-item a { color: var(--accent); text-decoration:none; }
+    .history-item a:hover { text-decoration:underline; }
+
+    /* Progress bar */
+    #progress-area { display:none; margin:20px 0; }
+    #progress-area .bar-container { width:100%; background:#1f2937; height:8px; border-radius:4px; }
+    #bar { width:0%; height:100%; background:var(--accent); border-radius:4px; transition:width 0.3s; }
+    #progress-label { font-size:12px; margin-bottom:4px; display:block; }
+    #progress-stats { font-size:12px; }
+  </style>
+</head>
+<body>
+
+<div class="app">
+  <div class="card">
+    <h1>📖 Booklet</h1>
+    <div class="subtitle">Local TTS Book Generator</div>
+
+    <div class="field">
+      <label>Book (PDF/TXT)</label>
+      <input type="file" id="book" accept=".pdf,.txt" />
+    </div>
+
+    <div class="field">
+      <label>Voice Source</label>
+      <select id="preset" onchange="toggleVoiceInput()">
+        <option value="">— Upload custom sample below —</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Custom Voice Sample</label>
+      <input type="file" id="voice" accept=".wav,.mp3" />
+    </div>
+
+    <div class="field">
+      <label>Chunk Size</label>
+      <input type="number" id="chunkSize" value="1000" />
+    </div>
+
+    <div class="controls">
+      <button class="primary" onclick="generate()">Start</button>
+      <button onclick="pause()">Pause</button>
+      <button onclick="resume()">Resume</button>
+      <button class="danger" onclick="stop()">Stop</button>
+    </div>
+
+    <div id="progress-area">
+      <span id="progress-label">Processing...</span>
+      <div class="bar-container"><div id="bar"></div></div>
+      <span id="progress-stats">0/0</span>
+    </div>
+
+    <p id="status" style="font-size:12px; color:var(--muted); margin-top:10px;"></p>
+  </div>
+
+  <div class="card">
+    <h2>History</h2>
+    <div id="history" class="history-list"></div>
+  </div>
+</div>
+
+<script>
+const statusEl = document.getElementById("status");
+
+function toggleVoiceInput() {
+  const presetVal = document.getElementById("preset").value;
+  document.getElementById("voice").disabled = !!presetVal;
+}
+
+async function api(endpoint, body=null) {
+  try {
+    const opts = { method:"POST" };
+    if(body) opts.body = body;
+    const res = await fetch(endpoint, opts);
+    if(!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Error");
+    }
+    const data = await res.json();
+    statusEl.textContent = `Status: ${data.status || "OK"}`;
+    loadHistory();
+  } catch(e) { statusEl.textContent = `Error: ${e.message}`; }
+}
+
+async function generate() {
+  const book = document.getElementById("book").files[0];
+  const voice = document.getElementById("voice").files[0];
+  const preset = document.getElementById("preset").value;
+  const chunkSize = document.getElementById("chunkSize").value;
+
+  if(!book) return alert("Please select a book.");
+  if(!voice && !preset) return alert("Please select a voice or a preset.");
+
+  const form = new FormData();
+  form.append("book", book);
+  if(preset) form.append("preset", preset);
+  if(voice && !preset) form.append("voice", voice);
+  form.append("chunk_size", chunkSize);
+
+  statusEl.textContent = "Uploading & Starting...";
+  await api("/generate", form);
+}
+
+const pause = () => api("/pause");
+const resume = () => api("/resume");
+const stop = () => api("/stop");
+
+async function loadHistory() {
+  const res = await fetch("/history");
+  const data = await res.json();
+  const container = document.getElementById("history");
+
+  if(data.history.length === 0) {
+    container.innerHTML = "<div style='color:#555'>No runs yet</div>";
+    return;
+  }
+
+  container.innerHTML = data.history.map(folder => `
+    <div class="history-item">
+      <span>${folder}</span>
+      <a href="/outputs/${folder}/" target="_blank">Open Folder</a>
+    </div>
+  `).join("");
+}
+
+async function loadPresets() {
+  const res = await fetch("/presets");
+  const data = await res.json();
+  const select = document.getElementById("preset");
+  data.presets.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p;
+    opt.textContent = p.replace(".pt","");
+    select.appendChild(opt);
+  });
+}
+
+function formatTime(seconds){
+  if(!seconds) return "0s";
+  const m = Math.floor(seconds/60);
+  const s = seconds%60;
+  return m>0?`${m}m ${s}s`:`${s}s`;
+}
+
+async function updateProgress() {
+  const res = await fetch("/progress");
+  const data = await res.json();
+  if(data.total>0){
+    const area = document.getElementById("progress-area");
+    const bar  = document.getElementById("bar");
+    const label = document.getElementById("progress-label");
+    const stats = document.getElementById("progress-stats");
+
+    area.style.display="block";
+    bar.style.width=`${data.percent}%`;
+    label.textContent=`Processing... ETA: ${formatTime(data.eta)}`;
+    stats.textContent=`${data.current} / ${data.total}`;
+
+    if(data.current===data.total){
+      label.textContent="Completed";
+      statusEl.textContent="Status: Completed";
+    }
+  }
+}
+
+loadPresets();
+loadHistory();
+setInterval(loadHistory,5000);
+setInterval(updateProgress,1000);
+</script>
+
+</body>
+</html>

@@ -1,19 +1,14 @@
 [project]
 name = "booklet"
 version = "0.1.0"
-description = "Generate entire audiobooks from a single 5 second voice clip, all offline!"
+description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = "==3.11.14"
 dependencies = [
-    "ebooklib",
-    "librosa>=0.11.0",
-    "ninja >=1.13.0",
-    "nltk >=3.9.2",
-    "numpy ==1.26.4",
-    "packaging >=24.1",
-    "pdfplumber >=0.11.4",
-    "psutil >=7.2.2",
-    "pyside6 >=6.7",
-    "python-docx >=1.2.0",
+    "fastapi[standard]>=0.128.7",
+    "pocket-tts>=1.0.3",
+    "pydub>=0.25.1",
+    "pypdf>=6.7.0",
     "soundfile>=0.13.1",
+    "torch>=2.10.0",
 ]
