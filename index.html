@@ -131,8 +131,8 @@ async function generate() {
 
   const form = new FormData();
   form.append("book", book);
-  if(preset) form.append("preset", preset);
-  if(voice && !preset) form.append("voice", voice);
+  if(preset && preset !== "") form.append("preset", preset);
+  if(voice && (!preset || preset === "")) form.append("voice", voice);
   form.append("chunk_size", chunkSize);
 
   statusEl.textContent = "Uploading & Starting...";

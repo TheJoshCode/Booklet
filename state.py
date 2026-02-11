@@ -1,30 +1,31 @@
 import threading
 
-class TTSState:
+class State:
     def __init__(self):
         self.lock = threading.Lock()
-        self.pause_event = threading.Event()
-        self.stop_event = threading.Event()
+        self.paused = False
+        self.stopped = False
         self.current_idx = 0
         self.total_chunks = 0
         self.eta_seconds = 0
 
-        self.pause_event.set()  # not paused initially
-
     def pause(self):
-        self.pause_event.clear()
+        self.paused = True
 
     def resume(self):
-        self.pause_event.set()
+        self.paused = False
 
     def stop(self):
-        self.stop_event.set()
+        self.stopped = True
+        self.paused = False
 
-    def reset(self, total=0):
-        self.current_idx = 0
-        self.total_chunks = total
-        self.stop_event.clear()
-        self.pause_event.set()
-        self.eta_seconds = 0
+    def reset(self):
+        with self.lock:
+            self.paused = False
+            self.stopped = False
+            self.current_idx = 0
+            self.total_chunks = 0
+            self.eta_seconds = 0
 
-state = TTSState()
+# Global state instance
+state = State()

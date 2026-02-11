@@ -29,7 +29,7 @@ def serve_ui():
     return FileResponse(index_path)
 
 @app.post("/generate")
-async def generate(book: UploadFile, voice: UploadFile = None, preset: str = Form(None), chunk_size: int = Form(1000)):
+async def generate(book: UploadFile, voice: UploadFile = None, preset: str = Form(None), chunk_size: int = Form(1000), cpu_threads: int = Form(None)):
     if state.lock.locked():
         raise HTTPException(409, "Generation in progress")
 
@@ -38,22 +38,31 @@ async def generate(book: UploadFile, voice: UploadFile = None, preset: str = For
     with open(book_path, "wb") as f:
         f.write(await book.read())
 
+    # Clean up preset value - treat empty string as None
+    if preset == "" or preset is None:
+        preset = None
+    
+    logger.info(f"Generate request - preset: {preset}, voice uploaded: {voice is not None}")
+
     if preset:
-        # Use existing preset
+        # Use existing preset - pass the full path to the .pt file
         voice_path = os.path.join(PRESETS_DIR, preset)
         if not os.path.isfile(voice_path):
             raise HTTPException(404, f"Preset not found: {preset}")
+        logger.info(f"Using existing preset: {voice_path}")
     elif voice:
-        # Save uploaded voice temporarily
-        voice_path = f"/tmp/{run_id}_{voice.filename}"
-        with open(voice_path, "wb") as f:
+        # Save uploaded voice temporarily and create a preset from it
+        temp_voice_path = f"/tmp/{run_id}_{voice.filename}"
+        with open(temp_voice_path, "wb") as f:
             f.write(await voice.read())
-        # Optionally generate a new preset from this audio
+        # Generate a new preset from this audio
         preset_name = f"{run_id}.pt"
-        create_preset_from_audio(voice_path, preset_name)
+        logger.info(f"Creating preset from uploaded voice: {temp_voice_path}")
+        create_preset_from_audio(temp_voice_path, preset_name)
         voice_path = os.path.join(PRESETS_DIR, preset_name)
+        logger.info(f"Created new preset: {voice_path}")
     else:
-        raise HTTPException(400, "No voice provided")
+        raise HTTPException(400, "No voice or preset provided")
 
     output_file = os.path.join(OUTPUTS_DIR, f"{run_id}.mp3")
 
@@ -64,7 +73,8 @@ async def generate(book: UploadFile, voice: UploadFile = None, preset: str = For
             "voice_input": voice_path,
             "chunk_size": chunk_size,
             "run_id": run_id,
-            "output_file": output_file
+            "output_file": output_file,
+            "num_threads": cpu_threads
         },
         daemon=True,
         name=f"tts-run-{run_id}"

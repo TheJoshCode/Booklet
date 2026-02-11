@@ -6,9 +6,18 @@ readme = "README.md"
 requires-python = "==3.11.14"
 dependencies = [
     "fastapi[standard]>=0.128.7",
-    "pocket-tts>=1.0.3",
+    "pocket-tts",
+    "psutil>=7.2.2",
     "pydub>=0.25.1",
     "pypdf>=6.7.0",
     "soundfile>=0.13.1",
     "torch>=2.10.0",
 ]
+
+[tool.uv.workspace]
+members = [
+    "pocket-tts",
+]
+
+[tool.uv.sources]
+pocket-tts = { workspace = true }
