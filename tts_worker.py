@@ -6,11 +6,9 @@ import queue
 from typing import Optional
 import torch
 from pocket_tts import TTSModel
-from pocket_tts.modules.stateful_module import init_states  # Import this
 from scipy.io.wavfile import write as wav_write
 from pydub import AudioSegment
 import numpy as np
-import copy
 
 from state import state
 from parser import load_text, chunk_text
@@ -44,152 +42,57 @@ def save_audio_wav(audio_tensor, filename: str):
     audio_np_int16 = (audio_np * 32767).astype(np.int16)
     wav_write(filename, 24000, audio_np_int16)
 
-# =====================================================
-# Voice Handling
-# =====================================================
-def load_voice_conditioning(voice_input: str, model: TTSModel):
-    """
-    Load voice conditioning (speaker embedding) from preset file or audio file.
-    Returns the audio conditioning tensor, NOT the model state.
-    """
-    if os.path.isfile(voice_input) and voice_input.endswith(".pt"):
-        try:
-            # Load the saved conditioning tensor
-            data = torch.load(voice_input, map_location="cpu")
-            if isinstance(data, dict) and 'conditioning' in data:
-                conditioning = data['conditioning']
-            elif isinstance(data, torch.Tensor):
-                conditioning = data
-            else:
-                # Fallback: try to extract from old format
-                conditioning = data
-            logger.info(f"Loaded preset: {voice_input}")
-            return conditioning
-        except Exception as e:
-            logger.error(f"Failed to load preset {voice_input}: {e}")
-            return None
-    else:
-        try:
-            # Generate conditioning from audio file
-            if isinstance(voice_input, str):
-                from pocket_tts.utils.utils import download_if_necessary
-                from pocket_tts.data.audio import audio_read
-                from pocket_tts.data.audio_utils import convert_audio
-                
-                voice_input = download_if_necessary(voice_input)
-                audio, sample_rate = audio_read(voice_input)
-                audio = convert_audio(audio, sample_rate, model.config.mimi.sample_rate, 1)
-                audio = audio.unsqueeze(0).to(model.device)
-            
-            # Encode to get conditioning
-            with torch.no_grad():
-                encoded = model.mimi.encode_to_latent(audio)
-                latents = encoded.transpose(-1, -2).to(torch.float32)
-                conditioning = torch.nn.functional.linear(latents, model.flow_lm.speaker_proj_weight)
-            
-            logger.info(f"Generated voice conditioning from: {voice_input}")
-            return conditioning
-        except Exception as e:
-            logger.error(f"Failed to generate voice conditioning: {e}")
-            return None
-
-
-def create_preset_from_audio(voice_path: str, preset_name: str):
-    """Create a preset file from an audio file - saves the conditioning tensor."""
+def create_preset_from_audio(audio_path: str, preset_name: str):
+    """Create a speaker preset from an audio file."""
     preset_path = os.path.join(PRESETS_DIR, preset_name)
-    try:
-        temp_model = TTSModel.load_model(num_threads=1)
-        
-        # Generate conditioning
-        from pocket_tts.utils.utils import download_if_necessary
-        from pocket_tts.data.audio import audio_read
-        from pocket_tts.data.audio_utils import convert_audio
-        
-        voice_path = download_if_necessary(voice_path)
-        audio, sample_rate = audio_read(voice_path)
-        audio = convert_audio(audio, sample_rate, temp_model.config.mimi.sample_rate, 1)
-        audio = audio.unsqueeze(0).to(temp_model.device)
-        
-        with torch.no_grad():
-            encoded = temp_model.mimi.encode_to_latent(audio)
-            latents = encoded.transpose(-1, -2).to(torch.float32)
-            conditioning = torch.nn.functional.linear(latents, temp_model.flow_lm.speaker_proj_weight)
-        
-        # Save just the conditioning tensor
-        torch.save({'conditioning': conditioning.cpu()}, preset_path)
-        logger.info(f"Created preset: {preset_path}")
-        return conditioning
-    except Exception as e:
-        logger.error(f"Failed to create preset: {e}")
-        return None
+    
+    logger.info(f"Creating preset from audio: {audio_path}")
+    
+    # Load a temporary model just to encode the audio
+    model = TTSModel.load_model(num_threads=1)
+    
+    # Use save_audio_prompt to create the safetensors file
+    model.save_audio_prompt(audio_path, preset_path)
+    
+    logger.info(f"Preset saved to: {preset_path}")
+    return preset_path
 
 # =====================================================
 # Worker Thread (One Model Per Worker)
 # =====================================================
 class ChunkProcessor(threading.Thread):
-    def __init__(self, chunk_queue, result_queue, voice_conditioning, run_id, run_output_dir):
+    def __init__(self, chunk_queue, result_queue, voice_input, run_id, run_output_dir, worker_id):
         super().__init__(daemon=True)
         self.chunk_queue = chunk_queue
         self.result_queue = result_queue
-        self.voice_conditioning = voice_conditioning  # This is the speaker embedding tensor
+        self.voice_input = voice_input  # Path to preset or audio file
         self.run_id = run_id
         self.run_output_dir = run_output_dir
+        self.worker_id = worker_id
         self.should_stop = False
 
-        logger.info(f"[{run_id}] Loading model for worker {self.name}")
+        logger.info(f"[{run_id}] Worker {worker_id}: loading model...")
         self.model = TTSModel.load_model(num_threads=1)
         
-        # Initialize the model state properly using init_states
-        self.model_state = self._init_model_state()
-        logger.info(f"[{run_id}] Worker {self.name} ready")
-
-    def _init_model_state(self):
-        """Initialize fresh model state with voice conditioning."""
-        # Create fresh state
-        state = init_states(self.model.flow_lm, batch_size=1, sequence_length=self.voice_conditioning.shape[1])
+        logger.info(f"[{run_id}] Worker {worker_id}: loading voice...")
+        self.voice_state = self.model.get_state_for_audio_prompt(voice_input)
         
-        # Run the audio conditioning through the model to set up the state
-        with torch.no_grad():
-            # This mimics what get_state_for_audio_prompt does
-            text_embeddings = torch.zeros((1, 0, self.model.flow_lm.dim), 
-                                         dtype=self.model.flow_lm.dtype, 
-                                         device=self.model.flow_lm.device)
-            
-            # Prepare conditioning
-            audio_conditioning = self.voice_conditioning.to(self.model.flow_lm.device)
-            
-            # Run through flow_lm to initialize state properly
-            self.model.flow_lm._sample_next_latent(
-                torch.empty((1, 0, self.model.flow_lm.ldim), 
-                           dtype=self.model.flow_lm.dtype, 
-                           device=self.model.flow_lm.device),
-                torch.cat([text_embeddings, audio_conditioning], dim=1),
-                model_state=state,
-                lsd_decode_steps=self.model.lsd_decode_steps,
-                temp=self.model.temp,
-                noise_clamp=self.model.noise_clamp,
-                eos_threshold=self.model.eos_threshold,
-            )
-        
-        return state
+        logger.info(f"[{run_id}] Worker {worker_id} ready")
 
     def stop(self):
         self.should_stop = True
 
     def run(self):
         """Process chunks from the queue."""
-        if self.voice_conditioning is None:
-            logger.error(f"[{self.run_id}] Worker {self.name} has no voice conditioning")
-            return
-            
+        chunks_processed = 0
+        total_time = 0
+        
         while not self.should_stop:
             try:
-                # Check paused state
                 if state.is_paused():
                     time.sleep(0.1)
                     continue
                 
-                # Get next chunk with timeout
                 try:
                     chunk_data = self.chunk_queue.get(timeout=0.5)
                 except queue.Empty:
@@ -199,14 +102,14 @@ class ChunkProcessor(threading.Thread):
                     break
 
                 idx, chunk_text = chunk_data
+                start_time = time.time()
 
                 try:
-                    # Use the pre-initialized model state
-                    # copy_state=True ensures we don't mutate the original state
+                    # Each worker uses its own model and voice state
                     audio = self.model.generate_audio(
-                        model_state=copy.deepcopy(self.model_state),  # Deep copy to be safe
-                        text_to_generate=chunk_text,
-                        copy_state=True  # This creates a fresh copy for generation
+                        self.voice_state,
+                        chunk_text,
+                        copy_state=True
                     )
 
                     if audio is None:
@@ -219,18 +122,25 @@ class ChunkProcessor(threading.Thread):
 
                     save_audio_wav(audio, chunk_file)
 
+                    # Calculate timing
+                    elapsed = time.time() - start_time
+                    audio_duration = audio.shape[-1] / 24000
+                    
+                    total_time += elapsed
+                    chunks_processed += 1
+
                     self.result_queue.put((idx, chunk_file, "success"))
-                    logger.info(f"[{self.run_id}] Chunk {idx} complete ({self.name})")
+                    
+                    if chunks_processed % 10 == 0:
+                        avg_rtf = (chunks_processed * audio_duration) / total_time if total_time > 0 else 0
+                        logger.info(f"[{self.run_id}] Worker {self.worker_id} avg RTF: {avg_rtf:.2f}x")
 
                 except Exception as e:
-                    logger.error(
-                        f"[{self.run_id}] Error processing chunk {idx}: {e}",
-                        exc_info=True
-                    )
+                    logger.error(f"[{self.run_id}] Worker {self.worker_id} error on chunk {idx}: {e}")
                     self.result_queue.put((idx, None, f"error: {e}"))
 
             except Exception as e:
-                logger.error(f"[{self.run_id}] Worker crash: {e}", exc_info=True)
+                logger.error(f"[{self.run_id}] Worker {self.worker_id} crash: {e}", exc_info=True)
 
 # =====================================================
 # Main TTS Runner
@@ -252,27 +162,33 @@ def run_tts(
         logger.error(f"[{run_id}] Book file not found")
         return
 
-    # Load voice conditioning once
-    temp_model = TTSModel.load_model(num_threads=1)
-    voice_conditioning = load_voice_conditioning(voice_input, temp_model)
-    if voice_conditioning is None:
-        logger.error(f"[{run_id}] Voice validation failed")
+    # Validate voice input exists
+    if not os.path.isfile(voice_input):
+        logger.error(f"[{run_id}] Voice input not found: {voice_input}")
         return
-    del temp_model  # Free memory
 
-    # Load text using parser
+    # Load text
     text = load_text(book_path)
     if not text:
         logger.error(f"[{run_id}] Failed to load text from book")
         return
 
-    # Chunk text properly
     chunks = list(chunk_text(text, chunk_size))
     if not chunks:
         logger.error(f"[{run_id}] No chunks generated")
         return
 
-    logger.info(f"[{run_id}] Processing {len(chunks)} chunks with {num_threads or 'auto'} threads")
+    if num_threads is None:
+        cpu_count = os.cpu_count() or 4
+        # Use fewer workers, more threads per worker
+        num_workers = min(2, max(1, cpu_count // 4))
+        threads_per_worker = max(2, cpu_count // num_workers)
+    else:
+        total_threads = int(num_threads)
+        num_workers = min(2, max(1, total_threads // 4))
+        threads_per_worker = max(2, total_threads // num_workers)
+
+    logger.info(f"[{run_id}] Processing {len(chunks)} chunks with {num_workers} workers ({threads_per_worker} threads each)")
 
     run_output_dir = os.path.join(OUTPUTS_DIR, run_id)
     os.makedirs(run_output_dir, exist_ok=True)
@@ -282,29 +198,22 @@ def run_tts(
     chunk_queue = queue.Queue()
     result_queue = queue.Queue()
 
-    # Queue all chunks
     for idx, chunk in enumerate(chunks, start=1):
         chunk_queue.put((idx, chunk))
 
-    # Determine number of workers
-    if num_threads is None:
-        num_workers = max(1, min(os.cpu_count() or 1, 4))
-    else:
-        num_workers = int(num_threads)
-
-    # Add sentinel values to stop workers
     for _ in range(num_workers):
         chunk_queue.put(None)
 
-    # Start workers - each gets the voice conditioning
+    # Start workers - each loads its own model and voice state
     workers = []
-    for _ in range(num_workers):
+    for i in range(num_workers):
         worker = ChunkProcessor(
             chunk_queue,
             result_queue,
-            voice_conditioning,  # Pass the voice conditioning tensor
+            voice_input,  # Pass the voice path, each worker loads it
             run_id,
-            run_output_dir
+            run_output_dir,
+            worker_id=i
         )
         worker.start()
         workers.append(worker)
@@ -318,7 +227,6 @@ def run_tts(
             logger.info(f"[{run_id}] Stopping requested")
             break
 
-        # Handle pause
         while state.is_paused() and not state.is_stopped():
             time.sleep(0.1)
 
@@ -333,25 +241,22 @@ def run_tts(
                 failed += 1
 
         except queue.Empty:
-            # Check if workers are done
             if not any(w.is_alive() for w in workers):
                 break
             continue
 
-    # Cleanup workers
     for worker in workers:
         worker.stop()
     for worker in workers:
         worker.join(timeout=5)
 
-    # Combine audio files in order
+    # Combine audio
     combined_audio = None
     success_count = 0
     
     for idx in range(1, len(chunks) + 1):
         chunk_file = os.path.join(run_output_dir, f"chunk_{idx:03d}.wav")
         if not os.path.exists(chunk_file):
-            logger.warning(f"[{run_id}] Missing chunk file: {chunk_file}")
             continue
 
         try:
@@ -367,16 +272,12 @@ def run_tts(
             logger.info(f"[{run_id}] Final MP3 saved: {output_file} ({success_count}/{len(chunks)} chunks)")
         except Exception as e:
             logger.error(f"[{run_id}] Failed to export MP3: {e}")
-    else:
-        logger.error(f"[{run_id}] No audio generated")
 
     state.finish()
-    logger.info(f"[{run_id}] TTS job complete - Success: {success_count}, Failed: {failed}")
+    logger.info(f"[{run_id}] Complete - Success: {success_count}, Failed: {failed}")
     
-    # Cleanup input file
     if os.path.exists(book_path):
         try:
             os.remove(book_path)
-            logger.info(f"[{run_id}] Cleaned up input file: {book_path}")
         except Exception as e:
             logger.warning(f"[{run_id}] Failed to cleanup {book_path}: {e}")

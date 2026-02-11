@@ -65,7 +65,7 @@ async def generate(book: UploadFile, voice: UploadFile = None, preset: str = For
             with open(temp_voice_path, "wb") as f:
                 f.write(await voice.read())
             # Generate a new preset from this audio
-            preset_name = f"{run_id}.pt"
+            preset_name = f"{run_id}.safetensors"
             logger.info(f"Creating preset from uploaded voice: {temp_voice_path}")
             create_preset_from_audio(temp_voice_path, preset_name)
             voice_path = os.path.join(PRESETS_DIR, preset_name)
@@ -142,7 +142,7 @@ def history():
 
 @app.get("/presets")
 def list_presets():
-    presets = sorted([f for f in os.listdir(PRESETS_DIR) if f.endswith(".pt")])
+    presets = sorted([f for f in os.listdir(PRESETS_DIR) if f.endswith(".safetensors")])
     return {"presets": presets}
 
 @app.get("/download/{run_id}")
