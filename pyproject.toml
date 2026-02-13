@@ -9,7 +9,7 @@ dependencies = [
     "faster-whisper>=1.2.1",
     "k2>=0.3.0",
     "psutil>=7.2.2",
-    "pydub>=0.25.1",
+    "pydub",
     "pypdf>=6.7.0",
     "soundfile>=0.13.1",
     "whisper>=1.1.10",
@@ -18,7 +18,8 @@ dependencies = [
 
 [tool.uv.workspace]
 members = [
-    "LuxTTS",
+    #"LuxTTS",
+    "myLuxTTS",
 ]
 
 [tool.uv.sources]

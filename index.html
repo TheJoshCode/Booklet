@@ -24,26 +24,43 @@
 
     label { display:block; font-size:12px; font-weight:600; margin-bottom:6px; color:#c7d2fe; }
     .field { margin-bottom:16px; }
-    input,select { width:100%; background:#0f172a; border:1px solid var(--border); border-radius:8px; padding:10px; color:var(--text); outline:none; }
-    input:disabled, select:disabled { opacity:0.5; cursor:not-allowed; }
+    input,textarea { width:100%; background:#0f172a; border:1px solid var(--border); border-radius:8px; padding:10px; color:var(--text); outline:none; font-family:inherit; }
+    input:disabled, textarea:disabled { opacity:0.5; cursor:not-allowed; }
+    textarea { resize:vertical; min-height:60px; }
 
     .controls { display:flex; gap:10px; margin-top:20px; }
-    button { flex:1; border:none; border-radius:8px; padding:10px; font-weight:600; cursor:pointer; background:#1f2937; color:white; }
+    button { flex:1; border:none; border-radius:8px; padding:10px; font-weight:600; cursor:pointer; background:#1f2937; color:white; transition:all 0.2s; }
     button.primary { background: var(--accent); color:#020617; }
     button.danger { background: #ef4444; color:white; }
-    button:hover { opacity:0.9; }
+    button:hover:not(:disabled) { opacity:0.9; transform:translateY(-1px); }
+    button:disabled { opacity:0.5; cursor:not-allowed; }
+    button.processing { position:relative; }
+    button.processing::after { content:"..."; animation:dots 1.5s steps(4) infinite; }
+    @keyframes dots {
+      0%, 20% { content:""; }
+      40% { content:"."; }
+      60% { content:".."; }
+      80%, 100% { content:"..."; }
+    }
 
     .history-list { display:flex; flex-direction:column; gap:8px; max-height:80vh; overflow-y:auto; }
     .history-item { background: rgba(255,255,255,0.03); padding:10px; border-radius:6px; font-size:13px; display:flex; justify-content:space-between; align-items:center; }
     .history-item a { color: var(--accent); text-decoration:none; }
     .history-item a:hover { text-decoration:underline; }
 
-    /* Progress bar */
     #progress-area { display:none; margin:20px 0; }
     #progress-area .bar-container { width:100%; background:#1f2937; height:8px; border-radius:4px; }
     #bar { width:0%; height:100%; background:var(--accent); border-radius:4px; transition:width 0.3s; }
     #progress-label { font-size:12px; margin-bottom:4px; display:block; }
     #progress-stats { font-size:12px; }
+
+    .speed-container { display:flex; align-items:center; gap:10px; }
+    #speedValue { min-width:40px; text-align:center; color:var(--accent); font-weight:600; }
+    input[type="range"] { flex:1; accent-color:var(--accent); }
+
+    .info-text { font-size:11px; color:var(--muted); margin-top:4px; }
+    .warning { color:#fbbf24; }
+    .required { color:#ef4444; font-weight:600; }
   </style>
 </head>
 <body>
@@ -51,7 +68,7 @@
 <div class="app">
   <div class="card">
     <h1>📖 Booklet</h1>
-    <div class="subtitle">Local TTS Book Generator</div>
+    <div class="subtitle">TTS Book Generator (KISS Method)</div>
 
     <div class="field">
       <label>Book (PDF/TXT)</label>
@@ -59,20 +76,32 @@
     </div>
 
     <div class="field">
-      <label>Voice Source</label>
-      <select id="preset" onchange="toggleVoiceInput()">
-        <option value="">— Upload custom sample below —</option>
-      </select>
+      <label>Voice Sample (MP3/WAV) <span class="required">*REQUIRED*</span></label>
+      <input type="file" id="voice" accept=".wav,.mp3" />
+      <div class="info-text">Upload 3-30 second clear voice sample</div>
     </div>
 
     <div class="field">
-      <label>Custom Voice Sample</label>
-      <input type="file" id="voice" accept=".wav,.mp3" />
+      <label>Transcription <span class="required">*REQUIRED*</span></label>
+      <textarea id="transcription" placeholder="Type EXACTLY what is said in the voice sample. Required for voice cloning." required></textarea>
+      <div class="info-text warning">⚠️ Must match the audio exactly for best quality</div>
+    </div>
+
+    <div class="field">
+      <label>Speech Speed</label>
+      <div class="speed-container">
+        <span>Slow</span>
+        <input type="range" id="speed" min="0.5" max="2.0" step="0.05" value="0.9" oninput="updateSpeedDisplay()">
+        <span>Fast</span>
+        <span id="speedValue">0.9x</span>
+      </div>
+      <div class="info-text">0.9x = Best quality (default), 1.0x = Normal, 0.5-2.0x range</div>
     </div>
 
     <div class="field">
       <label>Chunk Size</label>
-      <input type="number" id="chunkSize" value="1000" />
+      <input type="number" id="chunkSize" value="800" min="400" max="1500" />
+      <div class="info-text">Characters per chunk. Default 800 (memory optimized)</div>
     </div>
 
     <div class="controls">
@@ -99,43 +128,82 @@
 
 <script>
 const statusEl = document.getElementById("status");
+let isProcessing = false;
 
-function toggleVoiceInput() {
-  const presetVal = document.getElementById("preset").value;
-  document.getElementById("voice").disabled = !!presetVal;
+function setProcessing(processing) {
+  isProcessing = processing;
+  const startBtn = document.querySelector("button.primary");
+  const inputs = document.querySelectorAll("input, textarea");
+
+  if (processing) {
+    startBtn.disabled = true;
+    startBtn.classList.add("processing");
+    inputs.forEach(i => i.disabled = true);
+  } else {
+    startBtn.disabled = false;
+    startBtn.classList.remove("processing");
+    inputs.forEach(i => i.disabled = false);
+  }
 }
 
-async function api(endpoint, body=null) {
+function updateSpeedDisplay() {
+  const speed = document.getElementById("speed").value;
+  document.getElementById("speedValue").textContent = speed + "x";
+}
+
+async function api(endpoint, body = null) {
   try {
-    const opts = { method:"POST" };
-    if(body) opts.body = body;
+    const opts = { method: "POST" };
+    if (body) opts.body = body;
+
     const res = await fetch(endpoint, opts);
-    if(!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || "Error");
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
     }
+
     const data = await res.json();
     statusEl.textContent = `Status: ${data.status || "OK"}`;
+    statusEl.style.color = "var(--accent)";
     loadHistory();
-  } catch(e) { statusEl.textContent = `Error: ${e.message}`; }
+  } catch (e) {
+    statusEl.textContent = `Error: ${e.message}`;
+    statusEl.style.color = "#ef4444";
+    console.error("API Error:", e);
+  }
 }
 
 async function generate() {
+  if (isProcessing) return;
+
   const book = document.getElementById("book").files[0];
   const voice = document.getElementById("voice").files[0];
-  const preset = document.getElementById("preset").value;
+  const transcription = document.getElementById("transcription").value.trim();
   const chunkSize = document.getElementById("chunkSize").value;
+  const speed = document.getElementById("speed").value;
 
-  if(!book) return alert("Please select a book.");
-  if(!voice && !preset) return alert("Please select a voice or a preset.");
+  if (!book) return alert("Please select a book.");
+  if (!voice) return alert("Please select a voice sample.");
+  if (!transcription) return alert("Transcription is required - type what the voice sample says.");
+
+  if (book.size > 100 * 1024 * 1024)
+    return alert("Book file is too large (max 100MB).");
+  if (voice.size > 50 * 1024 * 1024)
+    return alert("Voice file is too large (max 50MB).");
+  if (transcription.length < 5)
+    return alert("Transcription seems too short.");
 
   const form = new FormData();
   form.append("book", book);
-  if(preset && preset !== "") form.append("preset", preset);
-  if(voice && (!preset || preset === "")) form.append("voice", voice);
+  form.append("voice", voice);
+  form.append("transcription", transcription);
   form.append("chunk_size", chunkSize);
+  form.append("speed", speed);
 
-  statusEl.textContent = "Uploading & Starting...";
+  setProcessing(true);
+  statusEl.textContent = "Uploading...";
+  statusEl.style.color = "var(--muted)";
+
   await api("/generate", form);
 }
 
@@ -144,67 +212,72 @@ const resume = () => api("/resume");
 const stop = () => api("/stop");
 
 async function loadHistory() {
-  const res = await fetch("/history");
-  const data = await res.json();
-  const container = document.getElementById("history");
+  try {
+    const res = await fetch("/history");
+    const data = await res.json();
+    const container = document.getElementById("history");
 
-  if(data.history.length === 0) {
-    container.innerHTML = "<div style='color:#555'>No runs yet</div>";
-    return;
+    if (!data.history || data.history.length === 0) {
+      container.innerHTML = "<div style='color:#555'>No generations yet</div>";
+      return;
+    }
+
+    container.innerHTML = data.history.map(runId => `
+      <div class="history-item">
+        <span title="Run ID: ${runId}">${runId}</span>
+        <a href="/download/${runId}">Download</a>
+      </div>
+    `).join("");
+  } catch (e) {
+    console.error("Failed to load history:", e);
   }
-
-  container.innerHTML = data.history.map(folder => `
-    <div class="history-item">
-      <span>${folder}</span>
-      <a href="/outputs/${folder}/" target="_blank">Open Folder</a>
-    </div>
-  `).join("");
 }
 
-async function loadPresets() {
-  const res = await fetch("/presets");
-  const data = await res.json();
-  const select = document.getElementById("preset");
-  data.presets.forEach(p => {
-    const opt = document.createElement("option");
-    opt.value = p;
-    opt.textContent = p.replace(".pt","");
-    select.appendChild(opt);
-  });
-}
-
-function formatTime(seconds){
-  if(!seconds) return "0s";
-  const m = Math.floor(seconds/60);
-  const s = seconds%60;
-  return m>0?`${m}m ${s}s`:`${s}s`;
+function formatTime(seconds) {
+  if (!seconds) return "0s";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
 async function updateProgress() {
-  const res = await fetch("/progress");
-  const data = await res.json();
-  if(data.total>0){
-    const area = document.getElementById("progress-area");
-    const bar  = document.getElementById("bar");
-    const label = document.getElementById("progress-label");
-    const stats = document.getElementById("progress-stats");
+  try {
+    const res = await fetch("/progress");
+    const data = await res.json();
 
-    area.style.display="block";
-    bar.style.width=`${data.percent}%`;
-    label.textContent=`Processing... ETA: ${formatTime(data.eta)}`;
-    stats.textContent=`${data.current} / ${data.total}`;
+    if (data.total > 0) {
+      const area = document.getElementById("progress-area");
+      const bar = document.getElementById("bar");
+      const label = document.getElementById("progress-label");
+      const stats = document.getElementById("progress-stats");
 
-    if(data.current===data.total){
-      label.textContent="Completed";
-      statusEl.textContent="Status: Completed";
+      area.style.display = "block";
+      bar.style.width = `${data.percent}%`;
+
+      if (data.current < data.total) {
+        label.textContent = `Processing... ETA: ${formatTime(data.eta)}`;
+      } else {
+        label.textContent = "✓ Completed";
+        statusEl.textContent = "Status: Completed - Ready to download";
+        statusEl.style.color = "var(--accent)";
+        setProcessing(false);
+      }
+
+      const failedInfo = data.failed > 0 ? ` (${data.failed} failed)` : "";
+      stats.textContent = `${data.current} / ${data.total}${failedInfo}`;
+    } else {
+      if (isProcessing) setProcessing(false);
     }
-  }
+  } catch (e) {}
 }
 
-loadPresets();
-loadHistory();
-setInterval(loadHistory,5000);
-setInterval(updateProgress,1000);
+window.addEventListener("DOMContentLoaded", () => {
+  loadHistory();
+  updateSpeedDisplay();
+});
+
+setInterval(loadHistory, 5000);
+setInterval(updateProgress, 1000);
 </script>
 
 </body>

@@ -6,21 +6,46 @@ from pypdf import PdfReader
 logger = logging.getLogger("booklet.parser")
 
 def load_text(file_path: str) -> str:
+    """Load text from file - memory efficient for large files"""
     logger.debug(f"Loading text from: {file_path}")
     if file_path.lower().endswith(".pdf"):
         try:
             reader = PdfReader(file_path)
-            pages_text = [page.extract_text() or "" for page in reader.pages]
-            text = "\n".join(pages_text)
-            logger.info(f"PDF loaded — {len(text):,} chars from {len(pages_text)} pages")
+            # Process pages one at a time to reduce memory
+            text_parts = []
+            for i, page in enumerate(reader.pages):
+                page_text = page.extract_text() or ""
+                if page_text:
+                    text_parts.append(page_text)
+                # Clear page to save memory
+                if i % 10 == 0:  # Every 10 pages
+                    import gc
+                    gc.collect()
+            text = "\n".join(text_parts)
+            logger.info(f"PDF loaded — {len(text):,} chars from {len(reader.pages)} pages")
+            # Clean up
+            del reader, text_parts
+            import gc
+            gc.collect()
             return text
         except Exception as e:
             logger.error(f"Error reading PDF {file_path}: {e}", exc_info=True)
             return ""
     try:
+        # For text files, read in chunks to avoid memory spike
+        text_parts = []
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
+            while True:
+                chunk = f.read(1024 * 1024)  # Read 1MB at a time
+                if not chunk:
+                    break
+                text_parts.append(chunk)
+        text = "".join(text_parts)
         logger.info(f"TXT loaded — {len(text):,} chars")
+        # Clean up
+        del text_parts
+        import gc
+        gc.collect()
         return text
     except Exception as e:
         logger.error(f"Error reading TXT {file_path}: {e}")

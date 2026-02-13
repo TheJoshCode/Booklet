@@ -99,11 +99,11 @@ requires-dist = [
     { name = "faster-whisper", specifier = ">=1.2.1" },
     { name = "k2", specifier = ">=0.3.0" },
     { name = "psutil", specifier = ">=7.2.2" },
-    { name = "pydub", specifier = ">=0.25.1" },
+    { name = "pydub" },
     { name = "pypdf", specifier = ">=6.7.0" },
     { name = "soundfile", specifier = ">=0.13.1" },
     { name = "whisper", specifier = ">=1.1.10" },
-    { name = "zipvoice", editable = "LuxTTS" },
+    { name = "zipvoice", editable = "myLuxTTS" },
 ]
 
 [[package]]
@@ -2035,7 +2035,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/b4/c3/913cdd13ef3d882fa
 [[package]]
 name = "zipvoice"
 version = "0.0.11"
-source = { editable = "LuxTTS" }
+source = { editable = "myLuxTTS" }
 dependencies = [
     { name = "cn2an" },
     { name = "huggingface-hub" },
