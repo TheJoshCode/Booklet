@@ -187,6 +187,7 @@ class AsyncMP3Converter:
         self._stop_event = threading.Event()
         self.progress = ProgressStats(total=total_items)
         self._lock = threading.Lock()
+        self._submitted = 0  # actual number of jobs submitted (may be < total_items if TTS fails)
         
     def start(self):
         """Start converter worker threads."""
@@ -231,6 +232,11 @@ class AsyncMP3Converter:
     
     def submit(self, idx: int, wav_path: str, mp3_path: str):
         """Submit a conversion task."""
+        with self._lock:
+            self._submitted += 1
+            # Keep progress.total in sync with what's actually been submitted so
+            # the wait loop doesn't spin forever when some TTS chunks failed.
+            self.progress.total = self._submitted
         self.queue.put((idx, wav_path, mp3_path))
     
     def wait_for_all(self):
@@ -389,6 +395,19 @@ Examples:
     
     generated_mp3s: List[Optional[str]] = [None] * len(sentences)
     
+    import signal
+    
+    def _sigint_handler(sig, frame):
+        print("\nInterrupted — cleaning up...")
+        converter.stop()
+        try:
+            shutil.rmtree(temp_dir)
+        except OSError:
+            pass
+        sys.exit(1)
+    
+    signal.signal(signal.SIGINT, _sigint_handler)
+    
     if args.workers == 1:
         for i, sentence, wav_path, mp3_path in tasks:
             result = generate_single(model, voice_state, sentence, wav_path, i, len(tasks), gen_progress)
@@ -421,7 +440,7 @@ Examples:
     # Wait for MP3 conversions with progress updates
     print("\nWaiting for MP3 conversions...")
     last_completed = 0
-    while converter.progress.completed < converter.progress.total:
+    while converter._submitted > 0 and converter.progress.completed < converter.progress.total:
         if converter.progress.completed != last_completed:
             print(f"  Conversion: {converter.get_progress_str()}")
             last_completed = converter.progress.completed

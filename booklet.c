@@ -68,6 +68,7 @@ static Worker   g_workers[MAX_WORKERS];
 static int      g_num_workers = 0;
 static void    *g_zmq_context = NULL;
 static volatile int g_running = 1;
+static volatile int g_cleanup_done = 0;  /* guard against double-cleanup (signal + atexit) */
 
 /* Global progress tracking */
 static volatile int  g_completed_chunks = 0;
@@ -141,9 +142,9 @@ int allocate_cores(const char *run_id, int requested) {
         buf[size] = 0;
         root = json_tokener_parse(buf);
         free(buf);
+        if (!root) root = json_object_new_object();
     } else {
         root = json_object_new_object();
-        json_object_object_add(root, "allocations", json_object_new_object());
     }
 
     struct json_object *allocations;
@@ -152,26 +153,49 @@ int allocate_cores(const char *run_id, int requested) {
         json_object_object_add(root, "allocations", allocations);
     }
 
+    /* Evict stale entries: any run whose recorded PID is no longer alive. */
+    {
+        struct json_object *to_evict = json_object_new_array();
+        json_object_object_foreach(allocations, key, val) {
+            struct json_object *pid_obj;
+            if (json_object_object_get_ex(val, "pid", &pid_obj)) {
+                pid_t owner = (pid_t)json_object_get_int(pid_obj);
+                if (owner > 0 && kill(owner, 0) != 0 && errno == ESRCH)
+                    json_object_array_add(to_evict, json_object_new_string(key));
+            }
+        }
+        int nevict = json_object_array_length(to_evict);
+        for (int i = 0; i < nevict; i++) {
+            const char *k = json_object_get_string(
+                json_object_array_get_idx(to_evict, i));
+            printf("ℹ Evicting stale core allocation for run '%s'\n", k);
+            json_object_object_del(allocations, k);
+        }
+        json_object_put(to_evict);
+    }
+
     int used[256] = {0};
 
-    json_object_object_foreach(allocations, key, val) {
-        (void)key;
-        int len = json_object_array_length(val);
+    json_object_object_foreach(allocations, key2, val2) {
+        (void)key2;
+        struct json_object *cores_obj;
+        if (!json_object_object_get_ex(val2, "cores", &cores_obj)) continue;
+        int len = json_object_array_length(cores_obj);
         for (int i = 0; i < len; i++) {
-            int core = json_object_get_int(json_object_array_get_idx(val, i));
+            int core = json_object_get_int(json_object_array_get_idx(cores_obj, i));
             if (core >= 0 && core < 256)
                 used[core] = 1;
         }
     }
 
     g_allocated_count = 0;
-    struct json_object *my_array = json_object_new_array();
+    struct json_object *my_cores = json_object_new_array();
 
     /* Phase 1: preferred cores (skip 1 and 2) */
     for (int i = 0; i < total && g_allocated_count < requested; i++) {
         if (i == 1 || i == 2) continue;
         if (!used[i]) {
-            json_object_array_add(my_array, json_object_new_int(i));
+            json_object_array_add(my_cores, json_object_new_int(i));
             g_allocated_cores[g_allocated_count++] = i;
         }
     }
@@ -180,7 +204,7 @@ int allocate_cores(const char *run_id, int requested) {
     for (int i = 0; i < total && g_allocated_count < requested; i++) {
         if (i != 1 && i != 2) continue;
         if (!used[i]) {
-            json_object_array_add(my_array, json_object_new_int(i));
+            json_object_array_add(my_cores, json_object_new_int(i));
             g_allocated_cores[g_allocated_count++] = i;
         }
     }
@@ -189,7 +213,11 @@ int allocate_cores(const char *run_id, int requested) {
         printf("⚠ Not enough free cores. Requested %d, got %d\n",
                requested, g_allocated_count);
 
-    json_object_object_add(allocations, run_id, my_array);
+    /* Store {pid, cores} so future runs can evict us if we crash. */
+    struct json_object *my_entry = json_object_new_object();
+    json_object_object_add(my_entry, "pid",   json_object_new_int((int)getpid()));
+    json_object_object_add(my_entry, "cores", my_cores);
+    json_object_object_add(allocations, run_id, my_entry);
 
     rewind(f);
     if (ftruncate(fd, 0) != 0)
@@ -208,6 +236,8 @@ int allocate_cores(const char *run_id, int requested) {
 }
 
 void release_cores(const char *run_id) {
+    if (!run_id || run_id[0] == '\0') return;
+
     int fd = open(CORE_ALLOC_FILE, O_RDWR);
     if (fd < 0) return;
 
@@ -232,6 +262,12 @@ void release_cores(const char *run_id) {
     struct json_object *root = json_tokener_parse(buf);
     free(buf);
 
+    if (!root) {
+        flock(fd, LOCK_UN);
+        fclose(f);
+        return;
+    }
+
     struct json_object *allocations;
     if (json_object_object_get_ex(root, "allocations", &allocations))
         json_object_object_del(allocations, run_id);
@@ -251,25 +287,63 @@ void release_cores(const char *run_id) {
 }
 
 void cleanup(void) {
+    /* Guard: atexit + signal_handler both call cleanup(); only run once. */
+    if (g_cleanup_done) return;
+    g_cleanup_done = 1;
+
     printf("\nCleaning up workers...\n");
     for (int i = 0; i < g_num_workers; i++) {
-        if (g_workers[i].zmq_socket)
+        if (g_workers[i].zmq_socket) {
             zmq_close(g_workers[i].zmq_socket);
+            g_workers[i].zmq_socket = NULL;
+        }
         if (g_workers[i].pid > 0) {
             kill(g_workers[i].pid, SIGTERM);
-            waitpid(g_workers[i].pid, NULL, 0);
+
+            /* Wait up to 2 s for graceful exit, then SIGKILL. */
+            struct timespec deadline;
+            clock_gettime(CLOCK_REALTIME, &deadline);
+            deadline.tv_sec += 2;
+
+            int done = 0;
+            while (!done) {
+                int wstatus;
+                pid_t r = waitpid(g_workers[i].pid, &wstatus, WNOHANG);
+                if (r > 0) {
+                    done = 1;
+                } else if (r < 0) {
+                    done = 1; /* already gone */
+                } else {
+                    struct timespec now;
+                    clock_gettime(CLOCK_REALTIME, &now);
+                    if (now.tv_sec > deadline.tv_sec ||
+                        (now.tv_sec == deadline.tv_sec &&
+                         now.tv_nsec >= deadline.tv_nsec)) {
+                        kill(g_workers[i].pid, SIGKILL);
+                        waitpid(g_workers[i].pid, NULL, 0);
+                        done = 1;
+                    } else {
+                        usleep(50000); /* 50 ms poll */
+                    }
+                }
+            }
+            g_workers[i].pid = 0;
         }
         pthread_mutex_destroy(&g_workers[i].lock);
     }
-    if (g_zmq_context)
+    if (g_zmq_context) {
         zmq_ctx_term(g_zmq_context);
+        g_zmq_context = NULL;
+    }
     release_cores(g_run_id_global);
 }
 
 void signal_handler(int sig) {
     (void)sig;
     g_running = 0;
-    cleanup();
+    /* cleanup() is registered via atexit(); calling exit() is sufficient.
+     * Do NOT call cleanup() here directly — that would cause double-cleanup
+     * since exit() fires atexit handlers after this returns. */
     exit(0);
 }
 
@@ -476,13 +550,15 @@ int start_workers(Config *cfg) {
             snprintf(temp_s,      sizeof(temp_s),      "%.2f", cfg->temperature);
             snprintf(lsd_s,       sizeof(lsd_s),       "%d", cfg->lsd_steps);
 
-            execlp("thepages/bin/python3", "python3", "worker_instance.py",
-                   "--worker-id", worker_id_s,
-                   "--socket",    w->socket_addr,
-                   "--precision", cfg->precision ? "fp32" : "int8",
-                   "--temperature", temp_s,
-                   "--lsd-steps",  lsd_s,
-                   NULL);
+            execlp("uv", "uv",
+                "run",
+                "worker_instance.py",
+                "--worker-id", worker_id_s,
+                "--socket",    w->socket_addr,
+                "--precision", cfg->precision ? "fp32" : "int8",
+                "--temperature", temp_s,
+                "--lsd-steps",  lsd_s,
+                (char *)NULL);
 
             perror("Failed to exec worker");
             exit(1);
@@ -526,7 +602,24 @@ int start_workers(Config *cfg) {
         }
 
         int ready = 0;
-        for (int attempt = 0; attempt < PING_MAX_RETRIES && !ready; attempt++) {
+        for (int attempt = 0; attempt < PING_MAX_RETRIES && !ready && g_running; attempt++) {
+
+            /* Detect early worker death before wasting a ping timeout. */
+            if (w->pid > 0) {
+                int wstatus;
+                pid_t dead = waitpid(w->pid, &wstatus, WNOHANG);
+                if (dead > 0) {
+                    fprintf(stderr,
+                            "\nWorker %d (PID %d) exited prematurely (exit code %d).\n"
+                            "Check that all Python dependencies are installed "
+                            "(pydub, zmq, etc.).\n",
+                            i, (int)w->pid,
+                            WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1);
+                    w->pid = 0;  /* already reaped — don't kill again in cleanup */
+                    return -1;
+                }
+            }
+
             struct json_object *ping = json_object_new_object();
             json_object_object_add(ping, "command", json_object_new_string("ping"));
             const char *ping_str = json_object_to_json_string(ping);
@@ -540,10 +633,11 @@ int start_workers(Config *cfg) {
             }
             json_object_put(ping);
 
-            if (!ready) {
+            if (!ready && g_running) {
                 /* ZMQ REQ socket enters an error state after a failed send/recv;
                  * we must close and re-open it to retry. */
                 zmq_close(w->zmq_socket);
+                w->zmq_socket = NULL;
                 usleep(PING_RETRY_SLEEP_MS * 1000UL);
 
                 w->zmq_socket = zmq_socket(g_zmq_context, ZMQ_REQ);
@@ -553,6 +647,11 @@ int start_workers(Config *cfg) {
                                &ping_timeout, sizeof(ping_timeout));
                 zmq_connect(w->zmq_socket, w->socket_addr);
             }
+        }
+
+        if (!g_running) {
+            fprintf(stderr, "\nInterrupted while waiting for workers.\n");
+            return -1;
         }
 
         if (!ready) {
@@ -639,7 +738,7 @@ void* worker_thread(void *arg) {
             continue;
         }
 
-        char buf[4096];
+        char buf[65536];
         int rc = zmq_recv(w->zmq_socket, buf, sizeof(buf) - 1, 0);
         pthread_mutex_unlock(&w->lock);
 
