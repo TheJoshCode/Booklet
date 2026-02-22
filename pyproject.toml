@@ -1,0 +1,15 @@
+[project]
+name = "booklet"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "onnxruntime>=1.24.1",
+    "pocket-tts>=1.1.0",
+    "pydub>=0.25.1",
+    "scipy>=1.17.0",
+    "sentencepiece>=0.2.1",
+    "soundfile>=0.13.1",
+    "zmq>=0.0.0",
+]
